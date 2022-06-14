@@ -1,6 +1,6 @@
 # Algorithmic typewriter art: Can 1000 words paint a picture?
 
-![Process overview: Input photograph and character set transformed into 4 typeable layers, then typed in overlapping fashion.](https://github.com/juleskuehn/typewriter-art/raw/main/process.png)
+![Process overview: Input photograph and character set transformed into 4 typeable layers, then typed in overlapping fashion.](https://github.com/juleskuehn/typewriter-art/raw/master/process.png)
 
 ## Abstract
 
