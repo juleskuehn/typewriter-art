@@ -19,7 +19,7 @@ largely limited by human error and the mechanics of the typewriter.
 
 ## Try it out
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/juleskuehn/typewriter-art/blob/main/typewriter_demo.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/juleskuehn/typewriter-art/blob/master/typewriter_demo.ipynb)
 
 ## Learn more
 
