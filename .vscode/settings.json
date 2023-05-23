@@ -1,0 +1,15 @@
+{
+    // Set python formatter to black
+    "python.formatting.provider": "black",
+    // Enable formatting on save for all files
+    "editor.formatOnSave": true,
+    // Enable formatting on save for python files
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        // Set line length to 79
+        "editor.rulers": [
+            79
+        ],
+    },
+}

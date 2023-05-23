@@ -2,8 +2,8 @@ import numpy as np
 from collections import defaultdict as ddict
 import cv2
 
+
 class Combo:
-    
     def __init__(self, TL, TR, BL, BR, shrink=False):
         self.TL = TL
         self.TR = TR
@@ -22,28 +22,29 @@ class Combo:
             return np.array(img / 255, dtype="float32")
 
         def getTLq(img):
-            return img[:img.shape[0]//2, :img.shape[1]//2]
-        
+            return img[: img.shape[0] // 2, : img.shape[1] // 2]
+
         def getTRq(img):
-            return img[:img.shape[0]//2, img.shape[1]//2:]
-        
+            return img[: img.shape[0] // 2, img.shape[1] // 2 :]
+
         def getBLq(img):
-            return img[img.shape[0]//2:, :img.shape[1]//2]
+            return img[img.shape[0] // 2 :, : img.shape[1] // 2]
 
         def getBRq(img):
-            return img[img.shape[0]//2:, img.shape[1]//2:]
+            return img[img.shape[0] // 2 :, img.shape[1] // 2 :]
 
         # Always composite from full-size image (not shrunken)
-        TLimg = self.TL.cropped 
-        TRimg = self.TR.cropped 
-        BLimg = self.BL.cropped 
-        BRimg = self.BR.cropped 
+        TLimg = self.TL.cropped
+        TRimg = self.TR.cropped
+        BLimg = self.BL.cropped
+        BRimg = self.BR.cropped
         TLc = toFloat(getBRq(TLimg))
         TRc = toFloat(getBLq(TRimg))
         BLc = toFloat(getTRq(BLimg))
         BRc = toFloat(getTLq(BRimg))
         img = TLc * TRc * BLc * BRc
         return img
+
 
 class ComboSet:
     # Container class with useful methods

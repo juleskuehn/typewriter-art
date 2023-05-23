@@ -8,4 +8,4 @@ image2 = cv2.imread(argv[2], cv2.IMREAD_GRAYSCALE)
 print("PSNR:", compare_psnr(image1, image2))
 print("SSIM:", compare_ssim(image1, image2))
 
-cv2.imwrite('diff.png', cv2.subtract(image1, image2))
+cv2.imwrite("diff.png", cv2.subtract(image1, image2))

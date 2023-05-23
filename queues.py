@@ -2,6 +2,7 @@ from pqdict import pqdict
 import random
 from generator_utils import scoreAnn, scoreMse, compare
 
+
 class PositionQueue:
     def __init__(self, generator, maxVisits=5):
         self.queue = pqdict({}, key=lambda x: x[0])
@@ -33,21 +34,21 @@ class PositionQueue:
 
     def update(self, row, col):
         if row > 0 and col > 0:
-            self.add((row-1, col-1))
+            self.add((row - 1, col - 1))
         if row > 0:
-            self.add((row-1, col))
-        if row > 0 and col+2 < self.generator.cols:
-            self.add((row-1, col+1))
+            self.add((row - 1, col))
+        if row > 0 and col + 2 < self.generator.cols:
+            self.add((row - 1, col + 1))
         if col > 0:
-            self.add((row, col-1))
-        if col+2 < self.generator.cols:
-            self.add((row, col+1))
-        if row+2 < self.generator.rows and col > 0:
-            self.add((row+1, col-1))
-        if row+2 < self.generator.rows:
-            self.add((row+1, col))
-        if row+2 < self.generator.rows and col+2 < self.generator.cols:
-            self.add((row+1, col+1))
+            self.add((row, col - 1))
+        if col + 2 < self.generator.cols:
+            self.add((row, col + 1))
+        if row + 2 < self.generator.rows and col > 0:
+            self.add((row + 1, col - 1))
+        if row + 2 < self.generator.rows:
+            self.add((row + 1, col))
+        if row + 2 < self.generator.rows and col + 2 < self.generator.cols:
+            self.add((row + 1, col + 1))
 
     def score(self, position):
         row, col = position
@@ -56,7 +57,7 @@ class PositionQueue:
         if bestId == self.generator.comboGrid.get(row, col)[3]:
             return newScore - oldScore, None
         else:
-            return newScore - oldScore,  bestId
+            return newScore - oldScore, bestId
 
 
 class LinearQueue:
@@ -92,4 +93,4 @@ class LinearQueue:
 
     # Returns a tuple (position, bestId)
     def remove(self):
-        return self.queue.pop(), None # bestId not calculated for LinearQueue
+        return self.queue.pop(), None  # bestId not calculated for LinearQueue
