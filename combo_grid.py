@@ -6,6 +6,7 @@ class ComboGrid:
     # A grid of shape (rows, cols) of Combos.
     # 1 is the space (empty) character. It differs from having no constraint.
     def __init__(self, rows, cols, random=0):
+        # print("ComboGrid init: ", rows, cols)
         self.rows = rows
         self.cols = cols
         # Intiialize grid to space character
@@ -19,7 +20,7 @@ class ComboGrid:
     def initDirty(self):
         self.dirty = np.array(
             [[[1, 1, 1, 1] for _ in range(self.cols)] for _ in range(self.rows)],
-            dtype=np.bool,
+            dtype=bool,
         )
         # Space character on edges never changes, so clear dirty bit
         self.dirty[0, :, :2] = 0
@@ -48,6 +49,9 @@ class ComboGrid:
         # if chosen:
         # self.flips[row, col] += 1
         # print(self.flips[row, col])
+        # if chosen:
+        #     self.setDirty(row, col, False)
+        # else:
         self.setDirty(row, col)
 
     def setDirty(self, row, col, isDirty=True):
@@ -58,29 +62,17 @@ class ComboGrid:
         self.dirty[row + 1, col + 1, 0] = isDirty
 
     def isDirty(self, row, col):
-        dirty = (
-            np.sum(
-                [1 for bit in self.dirty[row : row + 2, col : col + 2].flatten() if bit]
-            )
-            > 0
-        )
+        dirty = np.any(self.dirty[row : row + 2, col : col + 2])
         # print(row, col, 'is', dirty)
         # return dirty and self.flips[row, col] <= self.maxFlips
         return dirty
 
     def isDitherDirty(self, row, col):
-        dirty = (
-            np.sum(
-                [
-                    1
-                    for bit in self.dirty[
-                        max(0, row - 2) : min(self.rows, row + 4),
-                        max(0, col - 2) : min(self.cols, col + 4),
-                    ].flatten()
-                    if bit
-                ]
-            )
-            > 0
+        dirty = np.any(
+            self.dirty[
+                max(0, row - 2) : min(self.rows, row + 4),
+                max(0, col - 2) : min(self.cols, col + 4),
+            ]
         )
         # print(row, col, 'is', dirty)
         return dirty and self.flips[row, col] <= self.maxFlips
@@ -157,4 +149,4 @@ class ComboGrid:
             for col in range(self.dirty.shape[1]):
                 s2 += f"{self.dirty[row, col, 2] or 0:2} {self.dirty[row, col, 3] or 0:2}  "
             s += s1 + "\n" + s2 + "\n\n"
-        print(s)
+        # print(s)

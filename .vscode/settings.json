@@ -12,4 +12,5 @@
             79
         ],
     },
+    "editor.defaultFormatter": "ms-python.black-formatter",
 }
