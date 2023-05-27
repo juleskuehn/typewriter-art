@@ -15,7 +15,7 @@ for fn in os.listdir(argv[2]):
     }
 
 for fn in sorted(scores, key=lambda x: scores[x][sortby], reverse=True):
-    print(fn)
-    print(f"PSNR: {scores[fn]['psnr']:5.3f} SSIM: {scores[fn]['ssim']:5.3f}\n")
+    # print(fn)
+    # print(f"PSNR: {scores[fn]['psnr']:5.3f} SSIM: {scores[fn]['ssim']:5.3f}\n")
 
 # cv2.imwrite('diff.png', cv2.subtract(image1, image2))

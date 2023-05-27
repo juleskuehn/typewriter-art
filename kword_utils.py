@@ -37,7 +37,7 @@ def resizeTarget(im, rowLength, charShape, charChange, numLayers=1, maxChars=Non
                 outWidth = rowLength * charWidth
                 outHeight = round((outWidth / inWidth) * inHeight * (xChange / yChange))
             else:
-                print("numChars:", numChars)
+                # print("numChars:", numChars)
                 break
         else:
             break
@@ -142,7 +142,7 @@ def chop_charset(
     """
     im = cv2.imread(fn, cv2.IMREAD_GRAYSCALE)
     # im = imread(fn)[:,:,0]*255
-    print("charset has shape", im.shape)
+    # print("charset has shape", im.shape)
     # numX = 80  # Number of columns
     # numY = 8  # Number of rows
 
@@ -168,10 +168,10 @@ def chop_charset(
     im = cv2.resize(
         im, dsize=(newStepX * numX, newStepY * numY), interpolation=cv2.INTER_AREA
     )
-    print("max char level:", np.max(im), "min char level:", np.min(im))
-    print("Actual character size", stepX, stepY)
-    print("Resized char size", newStepX, newStepY)
-    print("resized charset has shape", im.shape)
+    # print("max char level:", np.max(im), "min char level:", np.min(im))
+    # print("Actual character size", stepX, stepY)
+    # print("Resized char size", newStepX, newStepY)
+    # print("resized charset has shape", im.shape)
 
     # These need manual tuning per charset image
     startX = int(startX * newStepX)  # Crop left px

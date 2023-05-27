@@ -70,13 +70,15 @@ class ComboSet:
     def genCombo(self, TL, TR, BL, BR):
         combo = Combo(TL, TR, BL, BR)
         # Don't store combos due to memory limitations
-        # self.combos[TL.id][TR.id][BL.id][BR.id] = combo
+        self.combos[TL.id][TR.id][BL.id][BR.id] = combo
         # self.flat.append(combo)
         return combo
 
     # Takes char IDs
     def getCombo(self, TLid, TRid, BLid, BRid):
         if BRid in self.combos[TLid][TRid][BLid]:
+            # print("NS: combo cache hit")
             return self.combos[TLid][TRid][BLid][BRid]
         else:
+            # print("NS: combo cache miss")
             return None
