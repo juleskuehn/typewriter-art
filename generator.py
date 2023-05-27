@@ -302,12 +302,12 @@ class Generator:
                     facecolor="w",
                     edgecolor="w",
                     orientation="portrait",
-                    papertype=None,
+                    # papertype=None,
                     format=None,
                     transparent=False,
                     bbox_inches=None,
                     pad_inches=0,
-                    frameon=None,
+                    # frameon=None,
                     metadata=None,
                 )
             else:
@@ -362,9 +362,8 @@ class Generator:
                     self.comboGrid.flips[row, col] += 1
 
                     # choice = bestId # Already chosen by pQueue
-                    if search == "greedy":
-                        choice = bestId
-                    elif search == "ann":
+                    choice = bestId
+                    if search == "ann":
                         choice = scoreAnn(self, row, col, mode=init)
                     elif search == "simAnneal":
                         choice = getSimAnneal(self, row, col)
@@ -402,6 +401,7 @@ class Generator:
                 except KeyboardInterrupt:
                     break
 
+        # This only runs when the function completes
         updateProgress()
         updateGraphs(fig, ax)
         updateGraphs(fig, ax, save=True)
