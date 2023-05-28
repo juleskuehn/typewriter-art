@@ -3,6 +3,9 @@ import cv2
 from skimage.metrics import structural_similarity as compare_ssim
 from skimage.metrics import peak_signal_noise_ratio as compare_psnr
 
+from numba import njit
+from numba.np.ufunc import parallel
+
 
 def getSliceBounds(generator, row, col, shrunken=False):
     h = generator.shrunkenComboH if shrunken else generator.comboH
@@ -49,31 +52,6 @@ def getSimAnneal(generator, row, col):
         for char in chars
     )
 
-    def compositeAndCompare(
-        targetSlice,
-        otherCharsComposite,
-        charImg,
-        charID,
-        curScore,
-        asymmetry,
-        compareMode,
-    ):
-        mockupSlice = charImg * otherCharsComposite
-        score = 0
-        if compareMode in ["ssim"]:
-            score = -1 * compare_ssim(targetSlice, mockupSlice) + 1
-        elif compareMode in ["amse"]:
-            score = compare_amse(targetSlice, mockupSlice, asymmetry)
-        elif compareMode in ["blend"]:
-            ssim = -1 * compare_ssim(targetSlice, mockupSlice) + 1
-            amse = compare_amse(targetSlice, mockupSlice, asymmetry)
-            amse = np.sqrt(amse) / 255
-            score = amse * ssim**0.5  # Hardcoded my usual blend function
-
-        # Note that delta is reversed because we are looking for a minima
-        delta = curScore - score
-        return delta, charID
-
     for vars in vars_for_compare:
         delta, charID = compositeAndCompare(*vars)
         generator.stats["comparisonsMade"] += 1
@@ -86,9 +64,36 @@ def getSimAnneal(generator, row, col):
             generator.randomChoices += 1
             newChar = charID
             break
+
     generator.comboGrid.grid = origGrid
     # generator.queue.add((row, col))
     return newChar
+
+
+@njit
+def compositeAndCompare(
+    im1,
+    otherCharsComposite,
+    charImg,
+    charID,
+    curScore,
+    asymmetry,
+    compareMode,
+):
+    im2 = charImg * otherCharsComposite
+
+    def _as_floats(im1, im2):
+        im1 = np.asarray(im1)
+        im2 = np.asarray(im2)
+        return im1, im2
+
+    im1, im2 = _as_floats(im1, im2)
+    diff = im1 - im2
+    result = np.where(diff > 0, diff * (1 + asymmetry), diff)
+    score = np.mean(np.square(result))
+    # Note that delta is reversed because we are looking for a minima
+    delta = curScore - score
+    return delta, charID
 
 
 def compare(generator, row, col):
