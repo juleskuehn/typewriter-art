@@ -1,5 +1,4 @@
 import numpy as np
-from combo import Combo
 
 
 class ComboGrid:
@@ -66,16 +65,6 @@ class ComboGrid:
         # print(row, col, 'is', dirty)
         # return dirty and self.flips[row, col] <= self.maxFlips
         return dirty
-
-    def isDitherDirty(self, row, col):
-        dirty = np.any(
-            self.dirty[
-                max(0, row - 2) : min(self.rows, row + 4),
-                max(0, col - 2) : min(self.cols, col + 4),
-            ]
-        )
-        # print(row, col, 'is', dirty)
-        return dirty and self.flips[row, col] <= self.maxFlips
 
     def clean(self, row, col):
         # print("Cleaning position", row, col)

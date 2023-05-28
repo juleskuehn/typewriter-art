@@ -1,6 +1,5 @@
 import numpy as np
 from collections import defaultdict as ddict
-import cv2
 
 
 class Combo:

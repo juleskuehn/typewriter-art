@@ -1,6 +1,6 @@
 from pqdict import pqdict
 import random
-from generator_utils import scoreAnn, scoreMse, compare
+from generator_utils import scoreMse, compare
 
 
 class PositionQueue:

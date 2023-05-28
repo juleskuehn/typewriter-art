@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import math
 import random
 from timeit import Timer
-from annoy import AnnoyIndex
 from matplotlib.image import imread, imsave
 from PIL import Image
 import cv2
@@ -62,13 +61,6 @@ def brightenTarget(im, blackLevel):
     imBlack = 0  # Could test target image for this, or just leave as 0
     diff = blackLevel - imBlack
     return np.array(im * ((255 - diff) / 255) + diff, dtype="uint8")
-
-
-def gammaCorrect(img, gamma=1):
-    lookUpTable = np.empty((1, 256), np.uint8)
-    for i in range(256):
-        lookUpTable[0, i] = np.clip(pow(i / 255.0, gamma) * 255.0, 0, 255)
-    return cv2.LUT(img, lookUpTable)
 
 
 # Returns a mockup image, with the same size as the target image
