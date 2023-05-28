@@ -11,11 +11,12 @@ from skimage.metrics import structural_similarity as compare_ssim
 from skimage.metrics import mean_squared_error as compare_mse
 import pickle
 import sys
+from math import ceil
 
 from combo import ComboSet, Combo
 from combo_grid import ComboGrid
 from generator_utils import *
-from queues import PositionQueue, LinearQueue
+from queues import LinearQueue
 
 from IPython.display import display, clear_output
 import warnings
@@ -264,9 +265,7 @@ class Generator:
 
         if not initOnly:
             # self.psnrHistory.append(evaluateMockup(self))
-            if self.selectOrder == "priority":
-                self.queue = PositionQueue(self, maxVisits=maxVisits)
-            elif self.selectOrder == "random":
+            if self.selectOrder == "random":
                 self.queue = LinearQueue(self, maxVisits=maxVisits, randomOrder=True)
             else:
                 self.queue = LinearQueue(self, maxVisits=maxVisits, randomOrder=False)
