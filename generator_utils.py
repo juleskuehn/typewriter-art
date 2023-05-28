@@ -5,7 +5,6 @@ from skimage.metrics import mean_squared_error as compare_mse
 from skimage.metrics import peak_signal_noise_ratio as compare_psnr
 from skimage.metrics import normalized_root_mse as compare_nrmse
 
-# from kword_utils import gammaCorrect
 from math import ceil, sqrt
 
 # from position_queue import PositionQueue
@@ -23,177 +22,10 @@ def getSliceBounds(generator, row, col, shrunken=False):
     return startX, startY, endX, endY
 
 
-# Comparison with ANN is simple, so all code built into this function
-# vs. putBetter which calls getBestOfRandomK() which calls compare()
-# IDs returned by ANN will be 1 less than ID of char (start at 0 vs start at 1)
-def putAnn(generator, row, col, mode="blend", put=True, whatsLeft=True, brighten=0):
-    generator.stats["positionsVisited"] += 1
-    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
-    targetSlice = generator.targetImg[startY:endY, startX:endX]
-    origBest = generator.comboGrid.get(row, col)
-    # inverts target slice. composites already placed ink on top. inverts again.
-    generator.comboGrid.put(row, col, 1, chosen=False)
-    # TODO expose hyperparameter
-    if brighten != 0:
-        targetSlice = np.array(
-            ((targetSlice / 255) * (1 - brighten) + brighten) * 255, dtype="uint8"
-        )
-    if whatsLeft:
-        # Remove existing placed ink from target
-        targetSlice = compositeAdj(
-            generator, row, col, targetSlice=targetSlice, subtractive=True
-        )
-    numChars = len(generator.charSet.getAll())
-    best = None
-    if mode in ["angular", "blend"]:
-        angularScores = generator.angularAnn.get_nns_by_vector(
-            np.ndarray.flatten(targetSlice), numChars, include_distances=True
-        )
-    if mode in ["euclidean", "blend"]:
-        euclideanScores = generator.euclideanAnn.get_nns_by_vector(
-            np.ndarray.flatten(targetSlice), numChars, include_distances=True
-        )
-    if mode == "angular":
-        best = angularScores[0][0] + 1
-        bestScore = angularScores[0][1]
-    elif mode == "euclidean":
-        best = euclideanScores[0][0] + 1
-        bestScore = euclideanScores[0][1]
-    elif mode == "blend":
-        angularScores1 = [score / max(angularScores[1]) for score in angularScores[1]]
-        euclideanScores1 = [
-            score / max(euclideanScores[1]) for score in euclideanScores[1]
-        ]
-        d = {}
-        for i, id in enumerate(euclideanScores[0]):
-            d[id] = euclideanScores1[i]
-        for i, id in enumerate(angularScores[0]):
-            # TODO expose hyperparam
-            boostEucl = 2
-            # d[id] = d[id] ** boostEucl * angularScores1[i]
-            d[id] += (
-                angularScores1[i] / boostEucl
-            )  # Additive blend works better here.. normalization related?
-            # d[id] *= (1 + angularScores1[i])
-        best = min(d, key=lambda k: d[k]) + 1
-        if best in d:
-            bestScore = d[best]
-        else:
-            bestScore = -1
-    if best != None:
-        generator.comboGrid.put(row, col, best, chosen=True)
-        generator.mockupImg[startY:endY, startX:endX] = compositeAdj(
-            generator, row, col, shrunken=False
-        )
-    else:
-        generator.comboGrid.put(row, col, origBest, chosen=True)
-    return best
-
-
-def scoreAnn(generator, row, col, mode="blend"):
-    generator.stats["positionsVisited"] += 1
-    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
-    targetSlice = generator.targetImg[startY:endY, startX:endX]
-    origGrid = generator.comboGrid.grid.copy()
-    origImg = generator.mockupImg.copy()
-    # inverts target slice. composites already placed ink on top. inverts again.
-    generator.comboGrid.put(row, col, 1, chosen=False)
-    # TODO expose hyperparameter
-    # amt = 0.3
-    # targetSlice = np.array(((targetSlice/255)*(1-amt)+amt)*255, dtype='uint8')
-    whatsLeft = True
-    if whatsLeft:
-        # Remove existing placed ink from target
-        targetSlice = compositeAdj(
-            generator, row, col, targetSlice=targetSlice, subtractive=True
-        )
-    numChars = len(generator.charSet.getAll())
-    best = None
-    if mode in ["angular", "blend"]:
-        angularScores = generator.angularAnn.get_nns_by_vector(
-            np.ndarray.flatten(targetSlice), numChars, include_distances=True
-        )
-    if mode in ["euclidean", "blend"]:
-        euclideanScores = generator.euclideanAnn.get_nns_by_vector(
-            np.ndarray.flatten(targetSlice), numChars, include_distances=True
-        )
-    if mode == "angular":
-        best = angularScores[0][0] + 1
-        bestScore = angularScores[0][1]
-    elif mode == "euclidean":
-        best = euclideanScores[0][0] + 1
-        bestScore = euclideanScores[0][1]
-    elif mode == "blend":
-        angularScores1 = [score / max(angularScores[1]) for score in angularScores[1]]
-        euclideanScores1 = [
-            score / max(euclideanScores[1]) for score in euclideanScores[1]
-        ]
-        d = {}
-        for i, id in enumerate(euclideanScores[0]):
-            d[id] = euclideanScores1[i]
-        for i, id in enumerate(angularScores[0]):
-            # TODO expose hyperparam
-            boostEucl = 2
-            d[id] += angularScores1[i] / boostEucl
-            # d[id] *= (1 + angularScores1[i])
-        best = min(d, key=lambda k: d[k]) + 1
-        if best in d:
-            bestScore = d[best]
-        else:
-            bestScore = -1
-    generator.comboGrid.grid = origGrid
-    generator.mockupImg = origImg
-    return best
-
-
-def putBetter(generator, row, col, k, mode="firstBetter"):
-    generator.stats["positionsVisited"] += 1
-    flipNum = generator.comboGrid.flips[row, col] + 1
-    k = min(len(generator.charSet.getAll()) - 5, k * flipNum)
-    if mode == "firstBetter":
-        bestMatch = getNextBetter(generator, row, col)
-    else:
-        bestMatch = getBestOfRandomK(generator, row, col, k)
-    if bestMatch != None:
-        generator.comboGrid.put(row, col, bestMatch, chosen=True)
-    # if generator.dither:
-    #     startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=True)
-    #     generator.shrunkenMockupImg[startY:endY, startX:endX] = compositeAdj(generator, row, col, shrunken=True)
-    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
-    if row < generator.mockupRows - 1 and col < generator.mockupCols - 1:
-        generator.mockupImg[startY:endY, startX:endX] = compositeAdj(
-            generator, row, col, shrunken=False
-        )
-    return bestMatch
-
-
-# Priority queue method
-def putThis(generator, row, col, id):
-    # changed = id != generator.comboGrid.get(row, col)[3]
-    # if changed:
-    # if generator.comboGrid.get(row, col)[3] == id:
-    #     return id
-    generator.comboGrid.put(row, col, id, chosen=True)
-    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
-    if row < generator.mockupRows - 1 and col < generator.mockupCols - 1:
-        generator.mockupImg[startY:endY, startX:endX] = compositeAdj(
-            generator, row, col, shrunken=False
-        )
-    # else:
-    #     generator.comboGrid.clean(row, col)
-    # if generator.queue.k > 0:
-    return id
-
-
 def putSimAnneal(generator, row, col):
     generator.stats["positionsVisited"] += 1
     bestMatch = getSimAnneal(generator, row, col)
     generator.comboGrid.put(row, col, bestMatch, chosen=True)
-    if generator.dither:
-        startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=True)
-        generator.shrunkenMockupImg[startY:endY, startX:endX] = compositeAdj(
-            generator, row, col, shrunken=True
-        )
     startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
     if row < generator.mockupRows - 1 and col < generator.mockupCols - 1:
         generator.mockupImg[startY:endY, startX:endX] = compositeAdj(
@@ -247,9 +79,7 @@ def dirtyLinearPositions(generator, randomOrder=False, zigzag=False):
             startCol = 1
         for row in range(startRow, endRow, 2):
             for col in range(startCol, endCol, 2):
-                if generator.dither and generator.comboGrid.isDitherDirty(row, col):
-                    positions.append((row, col))
-                elif generator.comboGrid.isDirty(row, col):
+                if generator.comboGrid.isDirty(row, col):
                     # if generator.comboGrid.isDirty(row,col):
                     positions.append((row, col))
                 else:
@@ -267,40 +97,6 @@ def dirtyLinearPositions(generator, randomOrder=False, zigzag=False):
     return positions
 
 
-def dirtyPriorityPositions(generator, mode):
-    # mode = 'mse'
-    # print("Running dirtyPriorityPositions")
-    positions = []
-    for row in range(generator.rows - 1):
-        for col in range(generator.cols - 1):
-            # positions.append((row, col))
-            if generator.dither and generator.comboGrid.isDitherDirty(row, col):
-                positions.append((row, col))
-            elif generator.comboGrid.isDirty(row, col):
-                positions.append((row, col))
-            else:
-                generator.comboGrid.clean(row, col)
-    if mode in ["euclidean", "angular", "blend"]:
-        oldscores = [compare(generator, row, col) for (row, col) in positions]
-        newscores = [
-            scoreAnn(generator, row, col, mode=mode) for (row, col) in positions
-        ]
-        scores = [newscores[i] - oldscores[i] for i in range(len(oldscores))]
-        return [positions for scores, positions in sorted(zip(scores, positions))]
-    elif mode == "mse":
-        oldscores = [compare(generator, row, col) for (row, col) in positions]
-        newscores = [scoreMse(generator, row, col)[0] for (row, col) in positions]
-        scores = [newscores[i] - oldscores[i] for i in range(len(oldscores))]
-        return [positions for scores, positions in sorted(zip(scores, positions))]
-    else:
-        # Default priority: Get the lowest current score (most oppty to improve?)
-        scores = [compare(generator, row, col) for (row, col) in positions]
-        return [
-            positions
-            for scores, positions in sorted(zip(scores, positions), reverse=True)
-        ]
-
-
 def initRandomPositions(generator):
     # Initialize randomly if desired
     numChars = len(generator.charSet.getAll())
@@ -316,20 +112,7 @@ def initRandomPositions(generator):
         )
 
 
-def initAnn(generator, mode="blend", priority=False, whatsLeft=False, brighten=0):
-    if priority:
-        generator.positions = dirtyPriorityPositions(generator, mode)
-    else:
-        generator.positions = dirtyLinearPositions(generator, randomOrder=False)
-    while len(generator.positions) > 0:
-        pos = generator.positions.pop(0)
-        if pos is None:
-            continue
-        row, col = pos
-        putAnn(generator, row, col, mode=mode, whatsLeft=whatsLeft, brighten=brighten)
-
-
-def compare(generator, row, col, ditherImg=None):
+def compare(generator, row, col):
     asymmetry = generator.asym
     generator.stats["comparisonsMade"] += 1
     startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
@@ -370,25 +153,6 @@ def compare_amse(im1, im2, asymmetry):
     return np.mean(np.square(result), dtype=np.float64)
 
 
-def getNextBetter(generator, row, col):
-    curScore = compare(generator, row, col)
-    chars = generator.charSet.getAll()[:]
-    np.random.shuffle(chars)
-    origGrid = generator.comboGrid.grid.copy()
-    betterChoice = None
-    for char in chars:
-        generator.comboGrid.put(row, col, char.id)
-        # if generator.dither:
-        #     ditherImg = applyDither(generator, row, col)
-        # Score the composite
-        if compare(generator, row, col) < curScore:
-            betterChoice = char.id
-            break
-
-    generator.comboGrid.grid = origGrid
-    return betterChoice
-
-
 def scoreMse(generator, row, col):
     # if k > 0:
     #     k = min(len(generator.charSet.getAll()) - b, k + generator.boostK)
@@ -407,135 +171,6 @@ def scoreMse(generator, row, col):
     generator.comboGrid.grid = origGrid
     bestChoice = min(scores, key=scores.get)
     return scores[bestChoice], bestChoice
-
-
-def getBestOfRandomK(generator, row, col, k=5, binned=False):
-    # Score against temporary ditherImg created for this comparison
-    # ditherImg = generator.ditherImg
-    curScore = compare(generator, row, col)
-    chars = generator.charSet.getSorted()[5:]  # all but brightest 5
-    chars = list(np.random.choice(chars, k, replace=False))  # choose k
-    chars = chars + generator.charSet.getSorted()[:5]  # add brightest 5
-    # chars = generator.charSet.getSorted()
-    scores = {}
-    origGrid = generator.comboGrid.grid.copy()
-    for char in chars:
-        generator.comboGrid.put(row, col, char.id)
-        # if generator.dither:
-        #     ditherImg = applyDither(generator, row, col)
-        # Score the composite
-        scores[char.id] = compare(generator, row, col)
-
-    generator.comboGrid.grid = origGrid
-
-    bestChoice = min(scores, key=scores.get)
-    better = scores[bestChoice] < curScore
-    return bestChoice if better else None
-
-
-# Return updated copy of the dither image based on current selection
-def applyDither(generator, row, col, amount=0.3, mode="li"):
-    # print("Begin dither")
-    ditherImg = generator.ditherImg.copy()
-
-    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=True)
-    ditherDone = np.zeros(ditherImg.shape, dtype=np.bool)
-    h, w = ditherImg.shape
-    residual = 0
-
-    if mode == "li":
-        # Li dither by pixel
-        K = 2.6  # Hyperparam
-        # Mask size
-        M = 3
-        # M = max(3, ceil((generator.shrunkenComboH+generator.shrunkenComboW)/4))
-        if M % 2 == 0:
-            M += 1
-        # print(M)
-        c = M // 2
-
-        # Calculate error between chosen combo and target subslice
-        # Per pixel
-        for row in range(startY, endY):
-            for col in range(startX, endX):
-                # print(row, col)
-                actual = generator.shrunkenMockupImg[row, col]
-                # desired = ditherImg[row, col] + residual
-                # target = min(255, max(0, ditherImg[row, col] + residual))
-                # residual = desired - target
-                target = ditherImg[row, col] + residual
-                error = (target - actual) * amount
-                # print(error)
-                # print(ditherSlice.shape, mockupSlice.shape)
-                # Get adjacent pixels which aren't chosen already, checking bounds
-                adjIdx = []
-                for i in range(max(0, row - c), min(h, row + c + 1)):
-                    for j in range(max(0, col - c), min(w, col + c + 1)):
-                        # print(i,j)
-                        # if (i, j) != (row, col) and not ditherDone[i, j]:
-                        if (i, j) != (row, col):
-                            adjIdx.append(
-                                (
-                                    i,
-                                    j,
-                                    np.linalg.norm(
-                                        np.array([i, j]) - np.array([row, col])
-                                    ),
-                                )
-                            )
-                # print(adjIdx)
-                weightIdx = []
-                for i, j, dist in adjIdx:
-                    adjVal = ditherImg[i, j]
-                    # Darken slices which are already darker, and vice-versa
-                    # Affect closer slices more
-                    weight = (adjVal if error > 0 else 255 - adjVal) / (dist**K)
-                    weightIdx.append((i, j, weight, adjVal))
-
-                totalWeight = np.sum([weight for _, _, weight, _ in weightIdx])
-                for i, j, weight, beforeVal in weightIdx:
-                    # Normalize weights since not all slices will be adjustable
-                    weight /= totalWeight
-                    # Overall we want to reach this level with the slice:
-                    # desiredVal = beforeVal + error*weight + residual
-                    desiredVal = beforeVal + error * weight
-                    # Apply corrections per pixel
-                    correction = desiredVal - beforeVal
-                    ditherImg[i, j] = min(255, max(0, ditherImg[i, j] + correction))
-                    afterVal = ditherImg[i, j]
-                    # residual = desiredVal - afterVal
-                    # print(beforeVal, desiredVal - afterVal)
-
-                ditherDone[row, col] = True
-                ditherImg[i, j] = generator.shrunkenTargetImg[i, j]
-
-    elif mode == "fs":
-        for row in range(startY, endY):
-            for col in range(startX, endX):
-                actual = generator.shrunkenMockupImg[row, col]
-                target = ditherImg[row, col] + residual
-                error = (target - actual) * amount
-                if col + 1 < w:
-                    ditherImg[row, col + 1] = min(
-                        255, max(0, ditherImg[row, col + 1] + error * 7 / 16)
-                    )
-                # Dither Bottom Left
-                if row + 1 < h and col - 1 >= 0:
-                    ditherImg[row + 1, col - 1] = min(
-                        255, max(0, ditherImg[row + 1, col - 1] + error * 3 / 16)
-                    )
-                # Dither Bottom
-                if row + 1 < w:
-                    ditherImg[row + 1, col] = min(
-                        255, max(0, ditherImg[row + 1, col] + error * 5 / 16)
-                    )
-                # Dither BottomRight
-                if row + 1 < w and col + 1 < h:
-                    ditherImg[row + 1, col + 1] = min(
-                        255, max(0, ditherImg[row + 1, col + 1] + error * 1 / 16)
-                    )
-    # print("end dither")
-    return ditherImg
 
 
 # Uses combos to store already composited "full" (all 4 layers)

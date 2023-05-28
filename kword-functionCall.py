@@ -60,7 +60,6 @@ kword(
     tempStep=0.001,  # For simAnneal. Amount to reduce temperature per visit usually 0.001
     scaleTemp=0.001,  # For simAnneal. Higher values increase likelihood of random choice
     tempReheatFactor=0,  # Proportion of previous initTemp to reheat to, ex. 0.5
-    initK=5,  # For incrK: k = initK * numVisits
     # Selection order
     selectOrder="random",  # ['linear', 'random', 'priority']
     # Saving

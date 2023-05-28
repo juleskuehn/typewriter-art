@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import math
 import random
 from timeit import Timer
-from annoy import AnnoyIndex
 from matplotlib.image import imread, imsave
 from PIL import Image
 import cv2
@@ -39,7 +38,6 @@ def kword(
     shrinkX=1,
     shrinkY=1,
     mode="amse",
-    gamma=1,
     resume=False,
     numAdjust=1,
     randomInit=False,
@@ -63,8 +61,7 @@ def kword(
     printEvery=10,
     initTemp=10,
     tempStep=0.001,
-    scaleTemp=1,
-    initK=5,
+    scaleTemp=1.0,
     subtractiveScale=128,
     selectOrder="linear",
     blendFunc="2*amse + ssim",
@@ -157,119 +154,6 @@ def kword(
     #     for i, char in enumerate(charSet.getAll()):
     #         cv2.imwrite(f'{basePath}results/chars/{char.id}.png', char.cropped)
 
-    # Autocrop routine, terminates the rest of the program
-    if autoCrop:
-        annSaved = False
-        charHeight, charWidth = charSet.get(0).cropped.shape
-
-        scores = []
-        # Try 2 zooms: none, and add 1 quadrant to bottom and right sides
-        for zoom in range(4):
-            # Shift 0-1.5 quadrants
-            for shiftLeft in range(4):
-                shiftLeft = int(((charWidth / 4) * shiftLeft) / 2)
-                for shiftUp in range(4):
-                    shiftUp = int(((charHeight / 4) * shiftUp) / 2)
-                    resizedTarget, targetPadding, rowLength = resizeTarget(
-                        targetImg,
-                        rowLength,
-                        charSet.get(0).cropped.shape,
-                        (xChange, yChange),
-                        numLayers,
-                        maxChars,
-                    )
-                    origShape = resizedTarget.shape
-                    height = resizedTarget.shape[0] + zoom * charHeight // 4
-                    width = resizedTarget.shape[1] + zoom * charWidth // 4
-                    # zoom target
-                    resizedTarget = cv2.resize(
-                        resizedTarget,
-                        dsize=(width, height),
-                        interpolation=cv2.INTER_AREA,
-                    )
-                    # shift target left and up
-                    resizedTarget = resizedTarget[shiftUp:, shiftLeft:]
-                    newTarget = np.full(origShape, 255, dtype="uint8")
-                    # crop or pad
-                    if resizedTarget.shape[0] >= origShape[0]:
-                        if resizedTarget.shape[1] >= origShape[1]:
-                            # crop right and bottom
-                            newTarget[:, :] = resizedTarget[
-                                : origShape[0], : origShape[1]
-                            ]
-                            minShape = newTarget.shape
-                        # pad right, crop bottom
-                        else:
-                            newTarget[:, : resizedTarget.shape[1]] = resizedTarget[
-                                : origShape[0], :
-                            ]
-                            minShape = [origShape[0], resizedTarget.shape[1]]
-                    else:
-                        if resizedTarget.shape[1] >= origShape[1]:
-                            # crop right, pad bottom
-                            newTarget[: resizedTarget.shape[0], :] = resizedTarget[
-                                :, : origShape[1]
-                            ]
-                            minShape = [resizedTarget.shape[0], origShape[1]]
-                        else:
-                            # pad right and bottom
-                            newTarget[
-                                : resizedTarget.shape[0], : resizedTarget.shape[1]
-                            ] = resizedTarget[: origShape[0], :]
-                            minShape = resizedTarget.shape
-                    #################################################
-                    # Generate mockup (the part that really matters!)
-                    generator = Generator(
-                        newTarget,
-                        newTarget,
-                        charSet,
-                        targetShape=targetImg.shape,
-                        targetPadding=targetPadding,
-                        shrunkenTargetPadding=targetPadding,
-                        subtractiveScale=subtractiveScale,
-                        basePath=basePath,
-                    )
-                    if annSaved:
-                        generator.loadAnn()
-                    else:
-                        # Build angular and euclidean ANN models
-                        generator.buildAnn()
-                        annSaved = True
-                    # THIS IS THE LINE THAT MATTERS
-                    generator.generateLayers(
-                        compareMode=mode,
-                        numAdjustPasses=numAdjust,
-                        gamma=gamma,
-                        show=show,
-                        init=initMode,
-                        initOnly=True,
-                        initPriority=initPriority,
-                        initComposite=initComposite,
-                        search=search,
-                    )
-                    ###################
-                    # Save init image
-                    mockupFn = f"{basePath}results/init_{rowLength}_{zoom}_{shiftLeft}_{shiftUp}"
-                    print("writing init file: ", mockupFn)
-                    mockupImg = generator.mockupImg
-                    # Crop added whitespace from shifting
-                    mockupImg = mockupImg[: minShape[0], : minShape[1]]
-                    newTarget = newTarget[: minShape[0], : minShape[1]]
-                    psnr = compare_psnr(mockupImg, newTarget)
-                    ssim = compare_ssim(mockupImg, newTarget)
-                    print("PSNR:", psnr)
-                    print("SSIM:", ssim)
-                    cv2.imwrite(mockupFn + ".png", mockupImg)
-                    scores.append((ssim + psnr, ssim, psnr, mockupFn))
-
-        scores = sorted(scores, reverse=True)
-        with open(f"{basePath}results/autocropScores.json", "w") as f:
-            f.write(json.dumps(scores))
-        for score in scores:
-            print(score)
-
-        return
-
     # else:
     #     shrunkenTarget, shrunkenTargetPadding = resizeTarget(targetImg, rowLength, charSet.get(0).shrunken.shape, (xChange, yChange))
     #     print('shrunken char shape', charSet.get(0).shrunken.shape)
@@ -329,7 +213,6 @@ def kword(
         shrunkenTargetPadding=targetPadding,
         asym=asymmetry,
         initTemp=initTemp,
-        initK=initK,
         subtractiveScale=subtractiveScale,
         selectOrder=selectOrder,
         basePath=basePath,
@@ -338,32 +221,18 @@ def kword(
         blendFunc=blendFunc,
         tempReheatFactor=tempReheatFactor,
     )
-    # if annSaved:
-    #     generator.loadAnn()
-    # else:
-    #     # Build angular and euclidean ANN models
-    #     generator.buildAnn()
-    #     annSaved = True
-    # #################################################
-    # # Generate mockup (the part that really matters!)
-    # generator = Generator(resizedTarget, shrunkenTarget, charSet, targetShape=targetImg.shape,
-    #                                     targetPadding=targetPadding, shrunkenTargetPadding=shrunkenTargetPadding)
-
     if resume != False:
         if type(resume) == type("hi"):
             generator.load_state(basePath + resume)
         else:
             generator.load_state()
 
-    # Build angular and euclidean ANN models
-    generator.buildAnn()
     # if resume != False:
     #     initMode = None
     # THIS IS THE LINE THAT MATTERS
     generator.generateLayers(
         compareMode=mode,
         numAdjustPasses=numAdjust,
-        gamma=gamma,
         show=show,
         init=initMode,
         initOnly=initOnly,

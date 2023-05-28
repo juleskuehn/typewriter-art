@@ -10,13 +10,10 @@ from matplotlib import animation, rc, ticker
 from skimage.metrics import structural_similarity as compare_ssim
 from skimage.metrics import mean_squared_error as compare_mse
 import pickle
-from annoy import AnnoyIndex
 import sys
 
 from combo import ComboSet, Combo
 from combo_grid import ComboGrid
-from char import Char
-from kword_utils import genMockup, gammaCorrect
 from generator_utils import *
 from queues import PositionQueue, LinearQueue
 
@@ -43,19 +40,16 @@ class Generator:
         targetImg,
         shrunkenTargetImg,
         charSet,
-        shapeliness=0.5,
         targetShape=None,
         targetPadding=None,
         shrunkenTargetPadding=None,
-        dither=False,
         asym=0.1,
         initTemp=0.005,
-        initK=5,
         subtractiveScale=64,
         selectOrder="linear",
         basePath="",
         tempStep=0.001,
-        scaleTemp=1,
+        scaleTemp=1.0,
         blendFunc="2*amse + ssim",
         tempReheatFactor=0.5,
     ):
@@ -64,7 +58,6 @@ class Generator:
         # print('t', targetImg.shape)
         self.shrunkenTargetImg = shrunkenTargetImg
         # print('s', shrunkenTargetImg.shape)
-        self.ditherImg = shrunkenTargetImg.copy()
         self.charSet = charSet
         self.comboSet = ComboSet()
         self.comboH, self.comboW = (
@@ -92,16 +85,12 @@ class Generator:
         self.numLayers = 0  # How many times has the image been typed
         self.overtype = 1  # How many times have all 4 layers been typed
         self.passNumber = 0
-        self.gamma = 1
         self.stats = {"positionsVisited": 0, "comparisonsMade": 0}
-        self.dither = dither
-        self.initK = initK
-        self.boostK = 1
         self.initTemp = initTemp
         self.temperature = initTemp
         self.tempStep = tempStep
         self.tempReheatFactor = tempReheatFactor
-        self.minTemp = 0.00000001
+        self.minTemp = 0.00001
         self.tempHistory = []
         self.psnrHistory = []
         self.randomChoices = 0
@@ -113,38 +102,6 @@ class Generator:
         self.frame = 0  # Number of positions visited
         self.scaleTemp = scaleTemp
         self.blendFunc = eval("lambda amse, ssim:" + blendFunc)
-
-    def buildAnn(self, trees=10):
-        dim = self.comboH * 2 * self.comboW * 2
-
-        charset = AnnoyIndex(dim, "angular")
-        for i, char in enumerate(self.charSet.getAll()):
-            charset.add_item(i, np.ndarray.flatten(char.cropped))
-        charset.build(trees)
-        try:
-            charset.save(os.getcwd() + "/angular.ann")
-        except:
-            self.loadAnn()
-            return
-        self.angularAnn = charset
-
-        charset = AnnoyIndex(dim, "euclidean")
-        for i, char in enumerate(self.charSet.getAll()):
-            charset.add_item(i, np.ndarray.flatten(char.cropped))
-        charset.build(trees)
-        charset.save(os.getcwd() + "/euclidean.ann")
-        self.euclideanAnn = charset
-
-    def loadAnn(self):
-        dim = self.comboH * 2 * self.comboW * 2
-
-        charset = AnnoyIndex(dim, "angular")
-        charset.load(os.getcwd() + "/angular.ann")
-        self.angularAnn = charset
-
-        charset = AnnoyIndex(dim, "euclidean")
-        charset.load(os.getcwd() + "/euclidean.ann")
-        self.euclideanAnn = charset
 
     def load_state(self, fn=None):
         if fn == None:
@@ -160,7 +117,6 @@ class Generator:
         numAdjustPasses=0,
         show=True,
         mockupFn="mp_untitled",
-        gamma=1,
         init="blank",
         initOnly=False,
         initPriority=False,
@@ -178,11 +134,8 @@ class Generator:
             return fig, ax
 
         self.compareMode = compareMode
-        self.gamma = gamma
 
         fig, ax = setupFig()
-
-        initK = self.initK
 
         if init == "random":
             for row in range(self.rows - 1):
@@ -191,15 +144,7 @@ class Generator:
                     self.positions.append(position)
             initRandomPositions(self)
 
-        elif init in ["angular", "euclidean", "blend"]:
-            # TODO expose hyperparam
-            initAnn(
-                self,
-                mode=init,
-                priority=initPriority,
-                whatsLeft=initComposite,
-                brighten=initBrighten,
-            )
+        # Otherwise init is blank
 
         # Save initial combogrid
         np.savetxt(
@@ -349,8 +294,6 @@ class Generator:
                         # LinearQueue doesn't return a bestId
                         # We only need bestId for greedy search
                         row, col = pos
-                        if bestId == None and search == "greedy":
-                            _, bestId = scoreMse(self, row, col)
                     except:
                         break
 
@@ -361,19 +304,7 @@ class Generator:
                     row, col = pos
                     self.comboGrid.flips[row, col] += 1
 
-                    # choice = bestId # Already chosen by pQueue
-                    choice = bestId
-                    if search == "ann":
-                        choice = scoreAnn(self, row, col, mode=init)
-                    elif search == "simAnneal":
-                        choice = getSimAnneal(self, row, col)
-                    # elif search == 'firstBetter':
-                    #     choice = putBetter(self, row, col, initK, mode='firstBetter')
-                    # elif search == 'incrK':
-                    #     choice = putBetter(self, row, col, initK, mode='incrK')
-                    # else:
-                    #     print("search must be one of 'greedy', 'ann', 'simAnneal', 'firstBetter', 'incrK'")
-                    #     return
+                    choice = getSimAnneal(self, row, col)
 
                     if choice != None and choice != self.comboGrid.get(row, col)[3]:
                         self.comboGrid.put(row, col, choice, chosen=True)
@@ -391,12 +322,11 @@ class Generator:
 
                     self.queue.add((row, col))
 
-                    if search == "simAnneal":
-                        self.temperature -= self.tempStep
-                        if self.temperature <= self.minTemp:
-                            self.initTemp *= self.tempReheatFactor
-                            self.tempStep *= self.tempReheatFactor
-                            self.temperature = self.initTemp
+                    self.temperature -= self.tempStep
+                    if self.temperature <= self.minTemp:
+                        self.initTemp *= self.tempReheatFactor
+                        self.tempStep *= self.tempReheatFactor
+                        self.temperature = self.initTemp
 
                 except KeyboardInterrupt:
                     break
