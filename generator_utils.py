@@ -1,15 +1,7 @@
 import numpy as np
 import cv2
 from skimage.metrics import structural_similarity as compare_ssim
-from skimage.metrics import mean_squared_error as compare_mse
 from skimage.metrics import peak_signal_noise_ratio as compare_psnr
-from skimage.metrics import normalized_root_mse as compare_nrmse
-
-from math import ceil, sqrt
-
-# from position_queue import PositionQueue
-
-# Functions related to the selection of characters
 
 
 def getSliceBounds(generator, row, col, shrunken=False):
@@ -22,40 +14,77 @@ def getSliceBounds(generator, row, col, shrunken=False):
     return startX, startY, endX, endY
 
 
-def putSimAnneal(generator, row, col):
-    generator.stats["positionsVisited"] += 1
-    bestMatch = getSimAnneal(generator, row, col)
-    generator.comboGrid.put(row, col, bestMatch, chosen=True)
-    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
-    if row < generator.mockupRows - 1 and col < generator.mockupCols - 1:
-        generator.mockupImg[startY:endY, startX:endX] = compositeAdj(
-            generator, row, col, shrunken=False
-        )
-    return bestMatch
-
-
 def getSimAnneal(generator, row, col):
     # Get score of existing slice
     curScore = compare(generator, row, col)
     chars = generator.charSet.getAll()[:]
     np.random.shuffle(chars)
-    origGrid = generator.comboGrid.grid.copy()
     newChar = None
-    for char in chars:
-        if char.id == generator.comboGrid.get(row, col)[3]:
-            continue
-        generator.comboGrid.put(row, col, char.id)
-        newScore = compare(generator, row, col)
+    chars = [c for c in chars if c.id != generator.comboGrid.get(row, col)[3]]
+
+    origGrid = generator.comboGrid.grid.copy()
+    # Get composite of 3 chars underneath this one to speed up comparisons
+    # Set this char to blank
+    generator.comboGrid.put(row, col, 0)
+
+    def toFloat(img):
+        return np.array(img / 255, dtype="float32")
+
+    # Gather primitives needed for parallel processing - these are common to all chars
+    otherCharsComposite = toFloat(compositeAdj(generator, row, col))
+    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
+    targetSlice = generator.targetImg[startY:endY, startX:endX]
+
+    # Generator for parallel processing including all primitives
+    vars_for_compare = (
+        (
+            targetSlice,
+            otherCharsComposite,
+            char.cropped,
+            char.id,
+            curScore,
+            generator.asym,
+            generator.compareMode,
+        )
+        for char in chars
+    )
+
+    def compositeAndCompare(
+        targetSlice,
+        otherCharsComposite,
+        charImg,
+        charID,
+        curScore,
+        asymmetry,
+        compareMode,
+    ):
+        mockupSlice = charImg * otherCharsComposite
+        score = 0
+        if compareMode in ["ssim"]:
+            score = -1 * compare_ssim(targetSlice, mockupSlice) + 1
+        elif compareMode in ["amse"]:
+            score = compare_amse(targetSlice, mockupSlice, asymmetry)
+        elif compareMode in ["blend"]:
+            ssim = -1 * compare_ssim(targetSlice, mockupSlice) + 1
+            amse = compare_amse(targetSlice, mockupSlice, asymmetry)
+            amse = np.sqrt(amse) / 255
+            score = amse * ssim**0.5  # Hardcoded my usual blend function
+
         # Note that delta is reversed because we are looking for a minima
-        delta = curScore - newScore
+        delta = curScore - score
+        return delta, charID
+
+    for vars in vars_for_compare:
+        delta, charID = compositeAndCompare(*vars)
+        generator.stats["comparisonsMade"] += 1
         if delta > 0:
-            newChar = char.id
+            newChar = charID
             break
         simRand = np.exp(delta / (generator.scaleTemp * generator.temperature))
         randChoice = simRand > np.random.rand()
         if randChoice:
             generator.randomChoices += 1
-            newChar = char.id
+            newChar = charID
             break
     generator.comboGrid.grid = origGrid
     # generator.queue.add((row, col))
