@@ -62,6 +62,26 @@ def getSimAnneal(generator, row, col):
     return newChar
 
 
+def compare(generator, row, col):
+    asymmetry = generator.asym
+    generator.stats["comparisonsMade"] += 1
+    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
+    targetSlice = generator.targetImg[startY:endY, startX:endX]
+    mockupSlice = compositeAdj(generator, row, col, shrunken=False)
+    score = 0
+    if generator.compareMode in ["ssim"]:
+        score = -1 * compare_ssim(targetSlice, mockupSlice) + 1
+    elif generator.compareMode in ["amse"]:
+        score = compare_amse(targetSlice, mockupSlice, asymmetry)
+    elif generator.compareMode in ["blend"]:
+        ssim = -1 * compare_ssim(targetSlice, mockupSlice) + 1
+        amse = compare_amse(targetSlice, mockupSlice, asymmetry)
+        amse = np.sqrt(amse) / 255
+        score = generator.blendFunc(amse, ssim)
+
+    return score
+
+
 def dirtyLinearPositions(generator, randomOrder=False, zigzag=False):
     positions = []
     layers = [0, 3, 2, 1] if zigzag else [0, 3, 1, 2]
@@ -112,26 +132,6 @@ def initRandomPositions(generator):
         )
 
 
-def compare(generator, row, col):
-    asymmetry = generator.asym
-    generator.stats["comparisonsMade"] += 1
-    startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
-    targetSlice = generator.targetImg[startY:endY, startX:endX]
-    mockupSlice = compositeAdj(generator, row, col, shrunken=False)
-    score = 0
-    if generator.compareMode in ["ssim"]:
-        score = -1 * compare_ssim(targetSlice, mockupSlice) + 1
-    elif generator.compareMode in ["amse"]:
-        score = compare_amse(targetSlice, mockupSlice, asymmetry)
-    elif generator.compareMode in ["blend"]:
-        ssim = -1 * compare_ssim(targetSlice, mockupSlice) + 1
-        amse = compare_amse(targetSlice, mockupSlice, asymmetry)
-        amse = np.sqrt(amse) / 255
-        score = generator.blendFunc(amse, ssim)
-
-    return score
-
-
 def compare_amse(im1, im2, asymmetry):
     # Based on source of skimage compare_mse
     # https://github.com/scikit-image/scikit-image/blob/master/skimage/measure/simple_metrics.py#L27
@@ -151,26 +151,6 @@ def compare_amse(im1, im2, asymmetry):
     diff = im1 - im2
     result = np.where(diff > 0, diff * (1 + asymmetry), diff)
     return np.mean(np.square(result), dtype=np.float64)
-
-
-def scoreMse(generator, row, col):
-    # if k > 0:
-    #     k = min(len(generator.charSet.getAll()) - b, k + generator.boostK)
-    #     chars = generator.charSet.getSorted()[b:] # all but brightest b
-    #     chars = list(np.random.choice(chars, k, replace=False)) # choose k
-    #     chars = chars + generator.charSet.getSorted()[:b] # add brightest b
-    # else:
-    chars = generator.charSet.getAll()
-    scores = {}
-    origGrid = generator.comboGrid.grid.copy()
-    for char in chars:
-        generator.comboGrid.put(row, col, char.id)
-        # Score the composite
-        scores[char.id] = compare(generator, row, col)
-
-    generator.comboGrid.grid = origGrid
-    bestChoice = min(scores, key=scores.get)
-    return scores[bestChoice], bestChoice
 
 
 # Uses combos to store already composited "full" (all 4 layers)
