@@ -321,6 +321,9 @@ def kword(
     # Calculate scores on result, print and save
     stats = f"{generator.frame} positions optimized\n{generator.stats['comparisonsMade']} comparisons made\n{time.time()-startTime:.2f} seconds"
 
+    # Calculate average time per comparison
+    if generator.stats["comparisonsMade"] > 0:
+        stats += f"\n{1000000*(time.time()-startTime)/generator.stats['comparisonsMade']:.2f} μs per comparison"
     print(stats)
 
     with open(f"{basePath}results/history_stats.txt", "w") as f:
