@@ -103,6 +103,7 @@ class Generator:
         self.frame = 0  # Number of positions visited
         self.scaleTemp = scaleTemp
         self.blendFunc = eval("lambda amse, ssim:" + blendFunc)
+        self.scores = np.zeros((self.rows, self.cols))
 
     def load_state(self, fn=None):
         if fn == None:

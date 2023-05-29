@@ -2,6 +2,10 @@ import numpy as np
 import cv2
 
 
+def toFloat(img):
+    return np.array(img / 255, dtype="float32")
+
+
 class Char:
     # Stores information about a single typed character
     # Lots of redundant information, for speed of retrieval
@@ -15,6 +19,7 @@ class Char:
             cropSettings["yCropPos"] : cropSettings["yCropPos"] + croppedSizeY,
             cropSettings["xCropPos"] : cropSettings["xCropPos"] + croppedSizeX,
         ]
+        self.croppedFloat = toFloat(self.cropped)
         shrunkenSizeX = self.cropped.shape[1] // cropSettings["shrinkX"]
         shrunkenSizeY = self.cropped.shape[0] // cropSettings["shrinkY"]
         self.shrunken = cv2.resize(

@@ -43,7 +43,7 @@ kword(
     # Add an overtype pass. Expects to find '{basePath}results/resume.pkl'
     resume=False,  # [True, False, 'filename']
     # Initial state
-    initMode="euclidean",  # ['euclidean', 'blend', 'angular', 'random', None]
+    initMode="random",  # ['euclidean', 'blend', 'angular', 'random', None]
     initOnly=False,  # Stop after initializing (don't optimize)
     initPriority=True,  # Initialize in priority order (priority only calculated once)
     initComposite=True,  # Subtract already placed ink from target image
@@ -51,15 +51,15 @@ kword(
     initBrighten=0,  # Raises black level, compressesing dynamic range. Between 0 (no brightening) and 1 (completely white)
     # Similarity metric
     mode="amse",  # ['amse', 'ssim', 'blend']
-    asymmetry=0.2,  # asymmetry > 0 penalizes "sins of commission" more harshly
+    asymmetry=0.0,  # asymmetry > 0 penalizes "sins of commission" more harshly
     blendFunc="amse * ssim**0.5",  # f(amse, ssim)
     # Search technique
     search="simAnneal",  # ['greedy', 'simAnneal']
     maxVisits=20,  # Stopping condition, necessary for stochastic search
-    initTemp=10,  # For simAnneal. Initial temperature. Minimum is 0. Usually 10
+    initTemp=5,  # For simAnneal. Initial temperature. Minimum is 0. Usually 10
     tempStep=0.001,  # For simAnneal. Amount to reduce temperature per visit usually 0.001
     scaleTemp=0.001,  # For simAnneal. Higher values increase likelihood of random choice
-    tempReheatFactor=0,  # Proportion of previous initTemp to reheat to, ex. 0.5
+    tempReheatFactor=0.001,  # Proportion of previous initTemp to reheat to, ex. 0.5
     # Selection order
     selectOrder="random",  # ['linear', 'random', 'priority']
     # Saving
@@ -67,5 +67,5 @@ kword(
     saveChars=True,  # Save the chopped character set
     hiResMockup=True,  # Save the mockup at maximum size. False: matching target shape
     # Logging
-    printEvery=1000,  # How many selections between progress updates?
+    printEvery=10000,  # How many selections between progress updates?
 )
