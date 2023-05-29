@@ -1,5 +1,29 @@
 import numpy as np
 from collections import defaultdict as ddict
+from numba import njit
+
+
+@njit
+def genComposite(TLimg, TRimg, BLimg, BRimg):
+    def getTLq(img):
+        return img[: img.shape[0] // 2, : img.shape[1] // 2]
+
+    def getTRq(img):
+        return img[: img.shape[0] // 2, img.shape[1] // 2 :]
+
+    def getBLq(img):
+        return img[img.shape[0] // 2 :, : img.shape[1] // 2]
+
+    def getBRq(img):
+        return img[img.shape[0] // 2 :, img.shape[1] // 2 :]
+
+    # Always composite from full-size image (not shrunken)
+    TLc = getBRq(TLimg)
+    TRc = getBLq(TRimg)
+    BLc = getTRq(BLimg)
+    BRc = getTLq(BRimg)
+    img = TLc * TRc * BLc * BRc
+    return img
 
 
 class Combo:
@@ -8,41 +32,12 @@ class Combo:
         self.TR = TR
         self.BL = BL
         self.BR = BR
-        self.img = self.genComposite(shrink)
-        self.avg = np.average(self.img)
-        # self.shrunken = cv2.resize(self.img,
-        #     dsize=(self.TL.shrunken.shape[1],self.TL.shrunken.shape[0]),
-        #     interpolation=cv2.INTER_AREA
-        # )
-
-    # charset is the list of char slices from which combos were generated
-    def genComposite(self, shrink):
-        def toFloat(img):
-            return np.array(img / 255, dtype="float32")
-
-        def getTLq(img):
-            return img[: img.shape[0] // 2, : img.shape[1] // 2]
-
-        def getTRq(img):
-            return img[: img.shape[0] // 2, img.shape[1] // 2 :]
-
-        def getBLq(img):
-            return img[img.shape[0] // 2 :, : img.shape[1] // 2]
-
-        def getBRq(img):
-            return img[img.shape[0] // 2 :, img.shape[1] // 2 :]
-
-        # Always composite from full-size image (not shrunken)
-        TLimg = self.TL.cropped
-        TRimg = self.TR.cropped
-        BLimg = self.BL.cropped
-        BRimg = self.BR.cropped
-        TLc = toFloat(getBRq(TLimg))
-        TRc = toFloat(getBLq(TRimg))
-        BLc = toFloat(getTRq(BLimg))
-        BRc = toFloat(getTLq(BRimg))
-        img = TLc * TRc * BLc * BRc
-        return img
+        self.img = genComposite(
+            TL.croppedFloat,
+            TR.croppedFloat,
+            BL.croppedFloat,
+            BR.croppedFloat,
+        )
 
 
 class ComboSet:
@@ -50,20 +45,6 @@ class ComboSet:
     # Stores Combos in 4D sparse array for easy filtering by constraint
     def __init__(self, chars=None):
         self.combos = ddict(lambda: ddict(lambda: ddict(lambda: ddict(None))))
-        # self.flat = []
-        # if chars:
-        #     self.genCombos(chars)
-
-    # def genCombos(self, chars):
-    #     for TL in chars:
-    #         for TR in chars:
-    #             for BL in chars:
-    #                 for BR in chars:
-    #                     combo = Combo(TL, TR, BL, BR)
-    #                     self.combos[TL.id][TR.id][BL.id][BR.id] = combo
-    #                     # self.flat.append(combo)
-
-    #     print("Generated", len(chars)**4, "combos.")
 
     # Takes chars
     def genCombo(self, TL, TR, BL, BR):

@@ -4,7 +4,6 @@ from skimage.metrics import structural_similarity as compare_ssim
 from skimage.metrics import peak_signal_noise_ratio as compare_psnr
 
 from numba import njit
-from numba.np.ufunc import parallel
 
 
 def getSliceBounds(generator, row, col, shrunken=False):
@@ -23,80 +22,74 @@ def getSimAnneal(generator, row, col):
     chars = generator.charSet.getAll()[:]
     np.random.shuffle(chars)
     newChar = None
-    chars = [c for c in chars if c.id != generator.comboGrid.get(row, col)[3]]
+    curId = generator.comboGrid.get(row, col)[3]
+    chars = [c for c in chars if c.id != curId]
 
     origGrid = generator.comboGrid.grid.copy()
     # Get composite of 3 chars underneath this one to speed up comparisons
     # Set this char to blank
     generator.comboGrid.put(row, col, 0)
 
-    def toFloat(img):
-        return np.array(img / 255, dtype="float32")
-
     # Gather primitives needed for parallel processing - these are common to all chars
-    otherCharsComposite = toFloat(compositeAdj(generator, row, col))
+    otherCharsComposite = compositeAdj(generator, row, col, asFloat=True)
     startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
     targetSlice = generator.targetImg[startY:endY, startX:endX]
+    generator.comboGrid.grid = origGrid
 
-    # Generator for parallel processing including all primitives
-    vars_for_compare = (
-        (
-            targetSlice,
-            otherCharsComposite,
-            char.cropped,
-            char.id,
-            curScore,
-            generator.asym,
-            generator.compareMode,
-        )
-        for char in chars
+    newChar, comparisonsMade, randomChoices = compositeAndCompareLoop(
+        np.array([c.cropped for c in chars], dtype="float32"),
+        np.array([c.id for c in chars], dtype="int32"),
+        targetSlice,
+        otherCharsComposite,
+        curScore,
+        generator.asym,
+        generator.temperature * generator.scaleTemp,
     )
 
-    for vars in vars_for_compare:
-        delta, charID = compositeAndCompare(*vars)
-        generator.stats["comparisonsMade"] += 1
-        if delta > 0:
-            newChar = charID
-            break
-        try:
-            simRand = np.exp(delta / (generator.scaleTemp * generator.temperature))
-            randChoice = simRand > np.random.rand()
-        except:
-            randChoice = False
-        if randChoice:
-            generator.randomChoices += 1
-            newChar = charID
-            break
-
-    generator.comboGrid.grid = origGrid
+    generator.stats["comparisonsMade"] += comparisonsMade
+    generator.randomChoices += randomChoices
     # generator.queue.add((row, col))
     return newChar
 
 
 @njit
-def compositeAndCompare(
-    im1,
+def compositeAndCompareLoop(
+    charImgs,
+    charIds,
+    targetSlice,
     otherCharsComposite,
-    charImg,
-    charID,
     curScore,
     asymmetry,
-    compareMode,
+    temperature,
 ):
-    im2 = charImg * otherCharsComposite
+    comparisonsMade = 0
+    randomChoices = 0
+    newChar = None
+    for i in range(len(charIds)):
+        charImg = charImgs[i]
+        charID = charIds[i]
+        im1 = np.asarray(targetSlice)
+        im2 = np.asarray(charImg * otherCharsComposite)
+        diff = im1 - im2
+        result = np.where(diff > 0, diff * (1 + asymmetry), diff)
+        score = np.mean(np.square(result))
+        # Note that delta is reversed because we are looking for a minima
+        delta = curScore - score
+        comparisonsMade += 1
+        if delta > 0:
+            newChar = charID
+            break
+        try:
+            simRand = np.exp(delta / temperature)
+            randChoice = simRand > np.random.rand()
+        except:
+            randChoice = False
+        if randChoice:
+            randomChoices += 1
+            newChar = charID
+            break
 
-    def _as_floats(im1, im2):
-        im1 = np.asarray(im1)
-        im2 = np.asarray(im2)
-        return im1, im2
-
-    im1, im2 = _as_floats(im1, im2)
-    diff = im1 - im2
-    result = np.where(diff > 0, diff * (1 + asymmetry), diff)
-    score = np.mean(np.square(result))
-    # Note that delta is reversed because we are looking for a minima
-    delta = curScore - score
-    return delta, charID
+    return newChar, comparisonsMade, randomChoices
 
 
 def compare(generator, row, col):
@@ -201,6 +194,7 @@ def compositeAdj(
     targetSlice="",
     addFixed=True,
     subtractive=False,
+    asFloat=False,
 ):
     def getIndices(cDict):
         t = cDict[0], cDict[1], cDict[2], cDict[3]
@@ -236,12 +230,17 @@ def compositeAdj(
     # Stitch quadrants together
     startX, startY, endX, endY = getSliceBounds(generator, row, col, shrunken=False)
     img = generator.fixedMockupImg[startY:endY, startX:endX] / 255
-    if not addFixed:
+    if addFixed:
+        img[: img.shape[0] // 2, : img.shape[1] // 2] *= qs[0].img
+        img[: img.shape[0] // 2, img.shape[1] // 2 :] *= qs[1].img
+        img[img.shape[0] // 2 :, : img.shape[1] // 2] *= qs[2].img
+        img[img.shape[0] // 2 :, img.shape[1] // 2 :] *= qs[3].img
+    else:
         img.fill(1)
-    img[: img.shape[0] // 2, : img.shape[1] // 2] *= qs[0].img
-    img[: img.shape[0] // 2, img.shape[1] // 2 :] *= qs[1].img
-    img[img.shape[0] // 2 :, : img.shape[1] // 2] *= qs[2].img
-    img[img.shape[0] // 2 :, img.shape[1] // 2 :] *= qs[3].img
+        img[: img.shape[0] // 2, : img.shape[1] // 2] = qs[0].img
+        img[: img.shape[0] // 2, img.shape[1] // 2 :] = qs[1].img
+        img[img.shape[0] // 2 :, : img.shape[1] // 2] = qs[2].img
+        img[img.shape[0] // 2 :, img.shape[1] // 2 :] = qs[3].img
     if subtractive:
         scale = generator.subtractiveScale
         typed = np.array(img * 255, dtype="uint8")
@@ -255,6 +254,8 @@ def compositeAdj(
             dsize=(generator.shrunkenComboW * 2, generator.shrunkenComboH * 2),
             interpolation=cv2.INTER_AREA,
         )
+    if asFloat:
+        return img
     return np.array(img * 255, dtype="uint8")
 
 
