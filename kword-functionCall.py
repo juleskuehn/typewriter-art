@@ -31,7 +31,7 @@ kword(
     ],  # IDs of chars
     # Target image
     targetFn="mwdog_crop.png",  # Sample image of Menswear Dog
-    rowLength=15,  # Width of the output typable in character columns.
+    rowLength=30,  # Width of the output typable in character columns.
     numLayers=2,  # For limiting maxChars
     maxChars=None,  # 5790 chars is equivalent to 1000 english words (with spaces). (Can also be "None" - no quotes)
     # Find optimal crop?
@@ -43,7 +43,7 @@ kword(
     # Add an overtype pass. Expects to find '{basePath}results/resume.pkl'
     resume=False,  # [True, False, 'filename']
     # Initial state
-    initMode="random",  # ['euclidean', 'blend', 'angular', 'random', None]
+    initMode=None,  # ['euclidean', 'blend', 'angular', 'random', None]
     initOnly=False,  # Stop after initializing (don't optimize)
     initPriority=True,  # Initialize in priority order (priority only calculated once)
     initComposite=True,  # Subtract already placed ink from target image
@@ -55,7 +55,7 @@ kword(
     blendFunc="amse * ssim**0.5",  # f(amse, ssim)
     # Search technique
     search="simAnneal",  # ['greedy', 'simAnneal']
-    maxVisits=20,  # Stopping condition, necessary for stochastic search
+    maxVisits=10,  # Stopping condition, necessary for stochastic search
     initTemp=5,  # For simAnneal. Initial temperature. Minimum is 0. Usually 10
     tempStep=0.001,  # For simAnneal. Amount to reduce temperature per visit usually 0.001
     scaleTemp=0.001,  # For simAnneal. Higher values increase likelihood of random choice
