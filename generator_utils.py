@@ -58,8 +58,11 @@ def getSimAnneal(generator, row, col):
         if delta > 0:
             newChar = charID
             break
-        simRand = np.exp(delta / (generator.scaleTemp * generator.temperature))
-        randChoice = simRand > np.random.rand()
+        try:
+            simRand = np.exp(delta / (generator.scaleTemp * generator.temperature))
+            randChoice = simRand > np.random.rand()
+        except:
+            randChoice = False
         if randChoice:
             generator.randomChoices += 1
             newChar = charID
