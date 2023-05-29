@@ -77,7 +77,6 @@ def kword(
 ):
     config = locals()
     # args = sys.argv
-    startTime = time.time()
     # Hardcoding the charset params for convenience
 
     # sourceFn = 'marker-shapes.png'
@@ -360,6 +359,7 @@ def kword(
     # if resume != False:
     #     initMode = None
     # THIS IS THE LINE THAT MATTERS
+    startTime = time.perf_counter_ns()
     generator.generateLayers(
         compareMode=mode,
         numAdjustPasses=numAdjust,
@@ -373,6 +373,7 @@ def kword(
         maxVisits=maxVisits,
         printEvery=printEvery,
     )
+    endTime = time.perf_counter_ns()
 
     # print(generator.comboGrid)
     # plt.style.use('default')
@@ -450,11 +451,14 @@ def kword(
 
     ############################
     # Calculate scores on result, print and save
-    stats = f"{generator.frame} positions optimized\n{generator.stats['comparisonsMade']} comparisons made\n{time.time()-startTime:.2f} seconds"
+    stats = f"{generator.frame} positions optimized\n{generator.stats['comparisonsMade']} comparisons made\n{(endTime-startTime)/1000000000:.2f} seconds"
 
+    # Calculate average time per comparison
+    if generator.stats["comparisonsMade"] > 0:
+        stats += f"\n{(endTime-startTime)/generator.stats['comparisonsMade']:.2f} ns per comparison"
     print(stats)
 
-    with open(f"{basePath}results/history_stats.txt", "w") as f:
+    with open(f"{basePath}results/history_stats.txt", "w", encoding="utf8") as f:
         f.write(stats)
 
     # Overlay the original image for comparison
