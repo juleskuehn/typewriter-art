@@ -12,6 +12,7 @@ from skimage.metrics import mean_squared_error as compare_mse
 import pickle
 import sys
 from math import ceil
+import concurrent.futures
 
 from combo import ComboSet, Combo
 from combo_grid import ComboGrid
@@ -32,6 +33,90 @@ def save_object(obj, filename):
 def load_object(filename):
     with open(filename, "rb") as input:
         return pickle.load(input)
+
+
+def updateProgress(generator):
+    # totalVisitable = (maxVisits + 1) * (generator.rows-2) * (generator.cols-2)
+    # numVisited = np.sum(generator.comboGrid.flips[1:-1, 1:-1])
+    scores = evaluateMockup(generator)
+    # lastScores = generator.psnrHistory[-1][1:]
+    # psnrDiff = scores[0] - lastScores[0]
+    # ssimDiff = scores[1] - lastScores[1]
+    # scoresStr = f"PSNR: {scores[0]:2.2f} ({'+' if psnrDiff >= 0 else ''}{psnrDiff:2.2f}) SSIM: {scores[1]:0.4f} ({'+' if ssimDiff >= 0 else ''}{ssimDiff:0.4f})"
+    # progressBar(numVisited, totalVisitable, scoresStr)
+    generator.psnrHistory.append([generator.frame, scores[0], scores[1]])
+    generator.tempHistory.append(generator.temperature)
+    # print("Temperature =", generator.temperature)
+
+    # Save the results so far
+    np.savetxt(
+        f"{generator.basePath}results/grid_optimized.txt",
+        generator.comboGrid.getPrintable(),
+        fmt="%i",
+        delimiter=" ",
+    )
+    # Save choice history
+    with open(f"{generator.basePath}results/history_choices.txt", "w") as f:
+        f.write("Row Col ChosenID\n")
+        f.write(
+            "\n".join(
+                [
+                    str(c[0]) + " " + str(c[1]) + " " + str(c[2])
+                    for c in generator.choiceHistory
+                ]
+            )
+        )
+
+
+def updateGraphs(generator, save=False):
+    # Mockup image
+    plt.subplot(121)
+    plt.style.use("default")
+    plt.axis("off")
+    plt.imshow(generator.mockupImg, cmap="gray", vmin=0, vmax=255)
+
+    # Scores / number optimized
+    # TODO: 2 y-axis labels (SSIM, PSNR)
+    plt.subplot(122)
+    plt.style.use("default")
+    normScores = [
+        (mse, ssim * 45, generator.tempHistory[i])
+        for i, [_, mse, ssim] in enumerate(generator.psnrHistory)
+    ]
+    [a, b, c] = plt.plot(normScores)
+
+    # Set xticks appropriately
+    ax = plt.gca()
+    ticks = ticker.FuncFormatter(
+        lambda x, pos: "{0:g}".format(x * generator.printEvery)
+    )
+    ax.xaxis.set_major_formatter(ticks)
+
+    ssimString = (f"{generator.psnrHistory[-1][2]:.4f}")[1:]
+    plt.title(
+        f"{generator.psnrHistory[-1][1]:.2f} {ssimString} {100.*generator.randomChoices/generator.printEvery:.1f}"
+    )
+    generator.randomChoices = 0
+
+    plt.legend([a, b, c], ["PSNR", "SSIM*45", "Temp"], loc=0)
+    if save:
+        plt.savefig(
+            generator.basePath + "results/summary.png",
+            dpi=None,
+            facecolor="w",
+            edgecolor="w",
+            orientation="portrait",
+            # papertype=None,
+            format=None,
+            transparent=False,
+            bbox_inches=None,
+            pad_inches=0,
+            # frameon=None,
+            metadata=None,
+        )
+    else:
+        display(generator.fig)
+        clear_output(wait=True)
 
 
 class Generator:
@@ -137,7 +222,7 @@ class Generator:
 
         self.compareMode = compareMode
 
-        fig, ax = setupFig()
+        self.fig, self.ax = setupFig()
 
         if init == "random":
             for row in range(self.rows - 1):
@@ -179,88 +264,6 @@ class Generator:
             )
             sys.stdout.flush()
 
-        def updateProgress():
-            # totalVisitable = (maxVisits + 1) * (self.rows-2) * (self.cols-2)
-            # numVisited = np.sum(self.comboGrid.flips[1:-1, 1:-1])
-            scores = evaluateMockup(self)
-            # lastScores = self.psnrHistory[-1][1:]
-            # psnrDiff = scores[0] - lastScores[0]
-            # ssimDiff = scores[1] - lastScores[1]
-            # scoresStr = f"PSNR: {scores[0]:2.2f} ({'+' if psnrDiff >= 0 else ''}{psnrDiff:2.2f}) SSIM: {scores[1]:0.4f} ({'+' if ssimDiff >= 0 else ''}{ssimDiff:0.4f})"
-            # progressBar(numVisited, totalVisitable, scoresStr)
-            self.psnrHistory.append([self.frame, scores[0], scores[1]])
-            self.tempHistory.append(self.temperature)
-            # print("Temperature =", self.temperature)
-
-            # Save the results so far
-            np.savetxt(
-                f"{self.basePath}results/grid_optimized.txt",
-                self.comboGrid.getPrintable(),
-                fmt="%i",
-                delimiter=" ",
-            )
-            # Save choice history
-            with open(f"{self.basePath}results/history_choices.txt", "w") as f:
-                f.write("Row Col ChosenID\n")
-                f.write(
-                    "\n".join(
-                        [
-                            str(c[0]) + " " + str(c[1]) + " " + str(c[2])
-                            for c in self.choiceHistory
-                        ]
-                    )
-                )
-
-        def updateGraphs(fig, ax, save=False):
-            # Mockup image
-            plt.subplot(121)
-            plt.style.use("default")
-            plt.axis("off")
-            plt.imshow(self.mockupImg, cmap="gray", vmin=0, vmax=255)
-
-            # Scores / number optimized
-            # TODO: 2 y-axis labels (SSIM, PSNR)
-            plt.subplot(122)
-            plt.style.use("default")
-            normScores = [
-                (mse, ssim * 45, self.tempHistory[i])
-                for i, [_, mse, ssim] in enumerate(self.psnrHistory)
-            ]
-            [a, b, c] = plt.plot(normScores)
-
-            # Set xticks appropriately
-            ax = plt.gca()
-            ticks = ticker.FuncFormatter(
-                lambda x, pos: "{0:g}".format(x * self.printEvery)
-            )
-            ax.xaxis.set_major_formatter(ticks)
-
-            ssimString = (f"{self.psnrHistory[-1][2]:.4f}")[1:]
-            plt.title(
-                f"{self.psnrHistory[-1][1]:.2f} {ssimString} {100.*self.randomChoices/printEvery:.1f}"
-            )
-            self.randomChoices = 0
-
-            plt.legend([a, b, c], ["PSNR", "SSIM*45", "Temp"], loc=0)
-            if save:
-                plt.savefig(
-                    self.basePath + "results/summary.png",
-                    dpi=None,
-                    facecolor="w",
-                    edgecolor="w",
-                    orientation="portrait",
-                    # papertype=None,
-                    format=None,
-                    transparent=False,
-                    bbox_inches=None,
-                    pad_inches=0,
-                    # frameon=None,
-                    metadata=None,
-                )
-            else:
-                display(fig)
-                clear_output(wait=True)
-
         self.frame = 0
         # updateProgress()
 
@@ -272,69 +275,14 @@ class Generator:
                 self.queue = LinearQueue(self, maxVisits=maxVisits, randomOrder=False)
 
             while True:
-                # Stopping condition: no change over past (lots of) scores
-                numPositions = self.rows * self.cols
-                numStats = ceil(numPositions / printEvery)
-                if len(self.psnrHistory) >= numStats:
-                    last = self.psnrHistory[-1]
-                    if all(
-                        s[1] == last[1] and s[2] == last[2]
-                        for s in self.psnrHistory[-numStats:-1]
-                    ):
-                        # Reheat simAnneal
-                        if search == "simAnneal":
-                            self.temperature = self.initTemp
-                        else:
-                            break
-                # Stopping condition: keyboard interrupt in try/catch
-                try:
-                    # Stopping condition: maxFlips reached
-                    try:
-                        pos, bestId = self.queue.remove()
-                        # LinearQueue doesn't return a bestId
-                        # We only need bestId for greedy search
-                        row, col = pos
-                    except:
-                        break
-
-                    if self.frame % printEvery == 0:
-                        updateProgress()
-                        updateGraphs(fig, ax)
-                    self.frame += 1
-                    row, col = pos
-                    self.comboGrid.flips[row, col] += 1
-
-                    choice = getSimAnneal(self, row, col)
-
-                    if choice != None and choice != self.comboGrid.get(row, col)[3]:
-                        self.comboGrid.put(row, col, choice, chosen=True)
-                        startX, startY, endX, endY = getSliceBounds(
-                            self, row, col, shrunken=False
-                        )
-                        if row < self.mockupRows - 1 and col < self.mockupCols - 1:
-                            self.mockupImg[startY:endY, startX:endX] = compositeAdj(
-                                self, row, col, shrunken=False
-                            )
-                        if self.selectOrder == "priority":
-                            self.queue.update(row, col)
-                        # Save choice
-                        self.choiceHistory.append([row, col, choice])
-
-                    self.queue.add((row, col))
-
-                    self.temperature -= self.tempStep
-                    if self.temperature <= self.minTemp:
-                        self.initTemp *= self.tempReheatFactor
-                        self.tempStep *= self.tempReheatFactor
-                        self.temperature = self.initTemp
-
-                except KeyboardInterrupt:
+                shouldBreak = optimizationLoop(self)
+                if shouldBreak:
                     break
 
         # This only runs when the function completes
-        updateProgress()
-        updateGraphs(fig, ax)
-        updateGraphs(fig, ax, save=True)
+        updateProgress(self)
+        updateGraphs(self)
+        updateGraphs(self, save=True)
 
         # print("\n", frame, 'positions visited,', self.stats['comparisonsMade'], 'comparisons made')
 
@@ -342,3 +290,54 @@ class Generator:
             {"mockupImg": self.mockupImg, "comboGrid": self.comboGrid},
             f"{self.basePath}results/resume.pkl",
         )
+
+        print(self.temperature)
+
+
+def optimizationLoop(generator):
+    # Stopping condition: no change over past (lots of) scores
+    # Stopping condition: keyboard interrupt in try/catch
+    try:
+        # Stopping condition: maxFlips reached
+        try:
+            pos, bestId = generator.queue.remove()
+            # LinearQueue doesn't return a bestId
+            # We only need bestId for greedy search
+            row, col = pos
+        except:
+            return True
+
+        if generator.frame % generator.printEvery == 0:
+            updateProgress(generator)
+            updateGraphs(generator)
+        generator.frame += 1
+        row, col = pos
+        generator.comboGrid.flips[row, col] += 1
+
+        choice = getSimAnneal(generator, row, col)
+
+        if choice != None and choice != generator.comboGrid.get(row, col)[3]:
+            generator.comboGrid.put(row, col, choice, chosen=True)
+            startX, startY, endX, endY = getSliceBounds(
+                generator, row, col, shrunken=False
+            )
+            if row < generator.mockupRows - 1 and col < generator.mockupCols - 1:
+                generator.mockupImg[startY:endY, startX:endX] = compositeAdj(
+                    generator, row, col, shrunken=False
+                )
+            if generator.selectOrder == "priority":
+                generator.queue.update(row, col)
+            # Save choice
+            generator.choiceHistory.append([row, col, choice])
+
+        generator.queue.add((row, col))
+
+        generator.temperature -= generator.tempStep
+        if generator.temperature <= generator.minTemp:
+            generator.initTemp *= generator.tempReheatFactor
+            generator.tempStep *= generator.tempReheatFactor
+            generator.temperature = generator.initTemp
+
+    except KeyboardInterrupt:
+        return True
+    return False
