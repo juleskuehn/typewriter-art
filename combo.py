@@ -1,9 +1,6 @@
-import numpy as np
 from collections import defaultdict as ddict
-from numba import njit
 
 
-@njit
 def genComposite(TLimg, TRimg, BLimg, BRimg):
     def getTLq(img):
         return img[: img.shape[0] // 2, : img.shape[1] // 2]

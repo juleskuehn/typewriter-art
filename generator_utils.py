@@ -19,11 +19,8 @@ def getSliceBounds(generator, row, col, shrunken=False):
 def getSimAnneal(generator, row, col):
     # Get score of existing slice
     curScore = compare(generator, row, col)
-    chars = generator.charSet.getAll()[:]
-    np.random.shuffle(chars)
     newChar = None
     curId = generator.comboGrid.get(row, col)[3]
-    chars = [c for c in chars if c.id != curId]
 
     origGrid = generator.comboGrid.grid.copy()
     # Get composite of 3 chars underneath this one to speed up comparisons
@@ -37,11 +34,12 @@ def getSimAnneal(generator, row, col):
     generator.comboGrid.grid = origGrid
 
     newChar, comparisonsMade, randomChoices = compositeAndCompareLoop(
-        np.array([c.cropped for c in chars], dtype="float32"),
-        np.array([c.id for c in chars], dtype="int32"),
+        generator.charSet.charImgs,
+        generator.charSet.charIds,
         targetSlice,
         otherCharsComposite,
         curScore,
+        curId,
         generator.asym,
         generator.temperature * generator.scaleTemp,
     )
@@ -59,15 +57,24 @@ def compositeAndCompareLoop(
     targetSlice,
     otherCharsComposite,
     curScore,
+    curId,
     asymmetry,
     temperature,
 ):
     comparisonsMade = 0
     randomChoices = 0
     newChar = None
+
+    # charImgs and charIds are your numpy arrays
+    shuffled_indices = np.random.permutation(len(charIds))
+    charImgs = charImgs[shuffled_indices]
+    charIds = charIds[shuffled_indices]
+
     for i in range(len(charIds)):
         charImg = charImgs[i]
         charID = charIds[i]
+        if charID == curId:
+            continue
         im1 = np.asarray(targetSlice)
         im2 = np.asarray(charImg * otherCharsComposite)
         diff = im1 - im2
