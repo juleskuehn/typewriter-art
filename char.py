@@ -51,6 +51,8 @@ class CharSet:
             for i, charImg in enumerate(filteredChars)
         ]
         self.sortedChars = sorted(self.chars, key=lambda x: x.avg, reverse=True)
+        self.charImgs = np.array([c.cropped for c in self.chars], dtype="float32")
+        self.charIds = np.array([c.id for c in self.chars], dtype="int32")
 
     def get(self, i):
         return self.chars[i]

@@ -1,18 +1,11 @@
 # Generator
 
 import numpy as np
-import operator
-import timeit
 import cv2
-import os
 import matplotlib.pyplot as plt
-from matplotlib import animation, rc, ticker
-from skimage.metrics import structural_similarity as compare_ssim
-from skimage.metrics import mean_squared_error as compare_mse
+from matplotlib import ticker
 import pickle
 import sys
-from math import ceil
-import concurrent.futures
 
 from combo import ComboSet, Combo
 from combo_grid import ComboGrid
