@@ -31,7 +31,7 @@ kword(
     ],  # IDs of chars
     # Target image
     targetFn="mwdog_crop.png",  # Sample image of Menswear Dog
-    rowLength=30,  # Width of the output typable in character columns.
+    rowLength=80,  # Width of the output typable in character columns.
     numLayers=2,  # For limiting maxChars
     maxChars=None,  # 5790 chars is equivalent to 1000 english words (with spaces). (Can also be "None" - no quotes)
     # Find optimal crop?
