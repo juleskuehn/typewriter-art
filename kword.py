@@ -4,6 +4,9 @@ import json
 import time
 import pickle
 
+#njit
+from numba import njit, prange
+
 from char import CharSet
 from generator import Generator
 from kword_utils import chop_charset, resizeTarget, genMockup
@@ -204,14 +207,14 @@ def kword(
     ################
     num_rows = newTarget.shape[0] // charHeight
     num_cols = newTarget.shape[1] // charWidth
-    # layer_offsets = [
-    #     (0, 0),
-    #     (0, charHeight // 2),
-    #     (charWidth // 2, 0),
-    #     (charWidth // 2, charHeight // 2),
-    # ]
-    layer_offsets = [(0, 0), (0, 0), (0, 0), (0, 0)]  # Keep it simple to test
-    num_loops = 100
+    layer_offsets = [
+        (0, 0),
+        (0, charWidth // 2),
+        (charHeight // 2, 0),
+        (charHeight // 2, charWidth // 2),
+    ]
+    # layer_offsets = [(0, 0), (0, 0), (0, 0), (0, 0)]  # Keep it simple to test
+    num_loops = 10
 
     # Internal representations of images should be float32 for easy math
     target = newTarget.astype("float32") / 255
@@ -219,6 +222,17 @@ def kword(
     assert target.shape[0] % chars.shape[1] == 0
     assert target.shape[1] % chars.shape[2] == 0
     mockup = np.full(target.shape, 1, dtype="float32")
+
+    # Pad mockup and target by the maximum layer_offset in each dimension
+    mockup, target = (np.pad(
+        img,
+        (
+            (0, max([o[0] for o in layer_offsets])),
+            (0, max([o[1] for o in layer_offsets])),
+        ),
+        "constant",
+        constant_values=1,
+    ) for img in (mockup, target))
 
     # Layers is a 3D array of mockups, one per layer
     layers = np.array([mockup.copy() for _ in layer_offsets], dtype="float32")
@@ -235,35 +249,31 @@ def kword(
     #     layers.push(state["mockupImg"])
 
     startTime = time.perf_counter_ns()
+    n_comparisons = 0
     # Layer optimization passes
     for loop_num in range(num_loops):
         for layer_num, layer_offset in enumerate(layer_offsets):
             # Composite all other layers
             bg = np.prod(np.delete(layers, layer_num, axis=0), axis=0)
 
-            choices[layer_num], mockup = layer_optimization_pass(
+            choices[layer_num], mockup, comparisons = layer_optimization_pass(
                 bg,
                 mockup,
                 target,
                 chars,
                 choices[layer_num],
                 layer_offset,
+                asymmetry=asymmetry,
+                mode=search,
+                temperature=0.001 / (loop_num + 1),
             )
+
+            n_comparisons += comparisons
 
             # Update the layer image based on the returned choices
             for i, choice in enumerate(choices[layer_num]):
                 row = i // num_cols
                 col = i % num_cols
-                replace_this_slice = layers[layer_num][
-                    row * chars.shape[1]
-                    + layer_offset[0] : (row + 1) * chars.shape[1]
-                    + layer_offset[0],
-                    col * chars.shape[2]
-                    + layer_offset[1] : (col + 1) * chars.shape[2]
-                    + layer_offset[1],
-                ]
-                if replace_this_slice.shape != chars[choice].shape:
-                    continue
                 layers[layer_num][
                     row * chars.shape[1]
                     + layer_offset[0] : (row + 1) * chars.shape[1]
@@ -284,9 +294,12 @@ def kword(
 
     endTime = time.perf_counter_ns()
     print(f"Layer optimization took {(endTime - startTime) / 1e9} seconds")
+    print(f"Total comparisons: {n_comparisons}")
+    print(f"Time per comparison: {(endTime - startTime) / n_comparisons} ms")
     return
 
-
+@njit(parallel=True, fastmath=True)
+# @njit
 def layer_optimization_pass(
     bg,
     mockup,
@@ -296,21 +309,19 @@ def layer_optimization_pass(
     layer_offset,
     asymmetry=0.1,
     mode="greedy",
-    temperature=0.1,
+    temperature=0.001,
 ):
     num_cols = target.shape[1] // chars.shape[2]
 
-    # Pad the images with white by the layer_offset
-    target, mockup, bg = (
-        np.pad(img, ((layer_offset[0], 0), (layer_offset[1], 1)), "constant")
-        for img in (target, mockup, bg)
-    )
+    comparisons = np.zeros(choices.shape[0], dtype="uint32")
 
-    for i, prev_choice in enumerate(choices):
+    # for i, prev_choice in enumerate(choices):
+    for i in prange(choices.shape[0]):
+        prev_choice = choices[i]
         row = i // num_cols
         col = i % num_cols
         # Get the slices of target, mockup and background for this position
-        target_slice, mockup_slice, bg_slice = (
+        target_slice, mockup_slice, bg_slice = [
             img[
                 row * chars.shape[1]
                 + layer_offset[0] : (row + 1) * chars.shape[1]
@@ -320,14 +331,15 @@ def layer_optimization_pass(
                 + layer_offset[1],
             ]
             for img in (target, mockup, bg)
-        )
+        ]
         # Get the character that was previously chosen for this position
         cur_composite = mockup_slice
         err = target_slice - cur_composite
         asym_err = np.where(err > 0, err * (1 + asymmetry), err)
         cur_amse = np.mean(np.square(asym_err))
         # Try other characters in this position
-        for new_choice in range(chars.shape[0]):
+        for new_choice in np.random.permutation(chars.shape[0]):
+            comparisons[i] += 1
             if new_choice == prev_choice:
                 continue
             new_char = chars[new_choice]
@@ -341,7 +353,7 @@ def layer_optimization_pass(
                     choices[i] = new_choice
                     cur_amse = new_amse
                     cur_composite = new_composite
-            elif mode == "sim_anneal":
+            elif mode == "simAnneal":
                 # Simulated annealing: Find a (usually) better choice
                 delta = cur_amse - new_amse
                 if delta > 0:
@@ -369,7 +381,7 @@ def layer_optimization_pass(
             + layer_offset[1],
         ] = cur_composite
 
-    return choices, mockup
+    return choices, mockup, np.sum(comparisons)
 
 
 def old_stuff():
