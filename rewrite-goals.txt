@@ -1,0 +1,26 @@
+Simplify codebase
+Minimize compositing
+Parallel:
+ - within a layer, each position is totally independent
+ - i.e. process TL layer, then TR, BL, BR - and repeat
+ - for each layer-optimization pass, the loop can be parallelized
+
+
+Layer-optimization pass (LOP):
+- Works with arbitrary number of layers (L)
+- composite the L-1 other layer images into `bgImg` from layerImgs[] -- initially blank or random
+- we also have available `curImg` (current composite mockup -- initially blank or random)
+- loop over positions (parallelize this) ---
+  for i in range(len(positions)):
+    optimizePosition(*bgImg, *curImg, *[charImgs], row, col, curCharIdx)
+ - no side effects
+ - returns resultImgSlice, charIdx, row, col
+- So we can break the task down into shorter lists of positions
+  - e.g. nPos/nThreads positions per process
+  - each process needs bgImg, curImg, charImgs, and a list of positions: (row, col, curCharIdx)
+- Each process returns a list of [resultImgSlice, charIdx, row, col]
+- Back in the main process, we can loop over the results and update:
+ - replace "resultImgSlice" into curImg at appropriate position (current composite mockup)
+ - replace charImgs[charIdx] into layerImgs[x] (current layer mockup)
+ - replace charIdx into the position list
+When loop is complete, curImg can be displayed to the user, and individual layer image is up to date
