@@ -1,33 +1,22 @@
 import numpy as np
 import cv2
 from math import inf, ceil
+import json
+import os
 
 from generator_utils import compositeAdj, getSliceBounds
+from char import CharSet
 
 
 # Resizes targetImg to be a multiple of character width
 # Scales height to correct for change in proportion
 # Pads height to be a multiple of character height
-def resizeTarget(im, rowLength, charShape, charChange, numLayers=1, maxChars=None):
-    while True:
-        charHeight, charWidth = charShape
-        xChange, yChange = charChange
-        inHeight, inWidth = im.shape
-        outWidth = rowLength * charWidth
-        outHeight = round((outWidth / inWidth) * inHeight * (xChange / yChange))
-        if maxChars != None:
-            # Ensure a maxChars will not be exceeded
-            numRows = outHeight // charHeight + 1
-            numChars = numRows * rowLength * 4 * numLayers
-            if numChars > maxChars:
-                rowLength -= 1
-                outWidth = rowLength * charWidth
-                outHeight = round((outWidth / inWidth) * inHeight * (xChange / yChange))
-            else:
-                # print("numChars:", numChars)
-                break
-        else:
-            break
+def resizeTarget(im, rowLength, charShape, charChange):
+    charHeight, charWidth = charShape
+    xChange, yChange = charChange
+    inHeight, inWidth = im.shape
+    outWidth = rowLength * charWidth
+    outHeight = round((outWidth / inWidth) * inHeight * (xChange / yChange))
 
     im = cv2.resize(im, dsize=(outWidth, outHeight), interpolation=cv2.INTER_AREA)
     # print("resized target has shape", im.shape)
@@ -87,7 +76,7 @@ def genMockup(
 # Cropped images are used for comparison (selection)
 # Padded images can be used for reconstruction (mockup) but are not strictly necessary
 def chop_charset(
-    fn="hermes.png",
+    image_path="hermes.png",
     numX=79,
     numY=7,
     startX=0,
@@ -100,6 +89,7 @@ def chop_charset(
     whiteThreshold=0.95,
     basePath="",
     excludeChars=[],
+    **kwargs,
 ):
     """
     The trick is that each quadrant needs to be integer-sized (unlikely this will occur naturally), while maintaining proportionality. So we do some resizing and keep track of the changes in proportion:
@@ -120,7 +110,7 @@ def chop_charset(
 
     The issue of characters overextending their bounds cannot be fully addressed without substantial complication. We can pad the images during chopping, and then find a crop window (character size before padding) that maintains the most information from the padded images, ie. the sum of the cropped information is lowest across the character set.
     """
-    im = cv2.imread(fn, cv2.IMREAD_GRAYSCALE)
+    im = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     # im = imread(fn)[:,:,0]*255
     # print("charset has shape", im.shape)
     # numX = 80  # Number of columns
@@ -227,15 +217,41 @@ def chop_charset(
     filteredChars = [char for i, char in enumerate(padded) if i + 1 not in excludeChars]
     import os
 
-    d = f"{basePath}results/chars/"
+    d = os.path.join(basePath, "results", "chars")
     filesToRemove = [os.path.join(d, f) for f in os.listdir(d)]
     for f in filesToRemove:
         os.remove(f)
     for i, char in enumerate(filteredChars):
         # print(i, char.shape)
         try:
-            cv2.imwrite(f"{basePath}results/chars/{i+1}.png", char)
+            cv2.imwrite(os.path.join(d, f"{i+1}.png"), char)
         except:
             continue
 
-    return a[:, y : y + ySize, x : x + xSize], tiles, (x, y), (xChange, yChange)
+    return tiles, (x, y), (xChange, yChange)
+
+
+def prep_charset(config_dir, base_path=""):
+    """
+    Loads charset config file & image and prepares charset for use
+    Inputs: Path to config directory (or config dict + path to charset image)
+    """
+    config_dir = os.path.join(base_path, "charsets", config_dir)
+
+    with open(os.path.join(config_dir, "config.json"), "r") as f:
+        config_dict = json.load(f)
+
+    config_dict["image_path"] = os.path.join(config_dir, config_dict["image_path"])
+
+    padded, (xCropPos, yCropPos), (xChange, yChange) = chop_charset(
+        basePath=base_path,
+        **config_dict,
+    )
+    cropSettings = {
+        "xPad": config_dict["xPad"],
+        "yPad": config_dict["yPad"],
+        "xCropPos": xCropPos,
+        "yCropPos": yCropPos,
+    }
+    charSet = CharSet(padded, cropSettings, config_dict["excludeChars"])
+    return charSet, xChange, yChange

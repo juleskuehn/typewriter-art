@@ -1,0 +1,31 @@
+{
+    "charset_name": "Smith-Corona (hard & soft)",
+    "image_path": "lightRibbonPadded.png",
+    "slicesX": 79,
+    "slicesY": 11,
+    "xPad": 0,
+    "yPad": 0,
+    "excludeChars": [
+        19,
+        36,
+        53,
+        55,
+        61,
+        63,
+        65,
+        67,
+        69,
+        71,
+        77,
+        79,
+        81,
+        85,
+        88,
+        95,
+        101,
+        136,
+        150
+    ],
+    "whiteThreshold": 0.99,
+    "blankSpace": true
+}
