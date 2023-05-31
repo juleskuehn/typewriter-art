@@ -2,7 +2,7 @@ from kword import kword
 
 kword(
     # basePath = os.getcwd() + '/typewriter-art/',
-    basePath="./",
+    base_path="./",
     # Charset image
     sourceFn="lightRibbonPadded.png",
     slicesX=79,
