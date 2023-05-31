@@ -4,7 +4,7 @@ import json
 import time
 import pickle
 
-#njit
+# njit
 from numba import njit, prange
 
 from char import CharSet
@@ -23,6 +23,7 @@ def kword(
     yPad=0,
     targetFn="maisie-williams.png",
     rowLength=20,
+    num_loops=10,
     c=1,
     shrinkX=1,
     shrinkY=1,
@@ -95,11 +96,12 @@ def kword(
     # xPad = 0
     # yPad = 0
 
-    # sourceFn = 'hermes-darker.png'
-    # slicesX = 79
-    # slicesY = 7
-    # xPad = 4
-    # yPad = 4
+    sourceFn = "hermes-darker.png"
+    slicesX = 79
+    slicesY = 7
+    xPad = 4
+    yPad = 4
+    excludeChars = []
 
     #################
     # Prepare charset
@@ -212,9 +214,12 @@ def kword(
         (0, charWidth // 2),
         (charHeight // 2, 0),
         (charHeight // 2, charWidth // 2),
+        (0, 0),
+        (0, charWidth // 2),
+        (charHeight // 2, 0),
+        (charHeight // 2, charWidth // 2),
     ]
     # layer_offsets = [(0, 0), (0, 0), (0, 0), (0, 0)]  # Keep it simple to test
-    num_loops = 10
 
     # Internal representations of images should be float32 for easy math
     target = newTarget.astype("float32") / 255
@@ -224,21 +229,40 @@ def kword(
     mockup = np.full(target.shape, 1, dtype="float32")
 
     # Pad mockup and target by the maximum layer_offset in each dimension
-    mockup, target = (np.pad(
-        img,
-        (
-            (0, max([o[0] for o in layer_offsets])),
-            (0, max([o[1] for o in layer_offsets])),
-        ),
-        "constant",
-        constant_values=1,
-    ) for img in (mockup, target))
+    mockup, target = (
+        np.pad(
+            img,
+            (
+                (0, max([o[0] for o in layer_offsets])),
+                (0, max([o[1] for o in layer_offsets])),
+            ),
+            "constant",
+            constant_values=1,
+        )
+        for img in (mockup, target)
+    )
 
     # Layers is a 3D array of mockups, one per layer
     layers = np.array([mockup.copy() for _ in layer_offsets], dtype="float32")
 
     # Choices is a 3D array of indices for chars selected per layer
     choices = np.zeros((layers.shape[0], num_rows * num_cols), dtype="uint16")
+
+    if initMode == "random":
+        choices = np.random.randint(0, len(charSet.chars), choices.shape)
+        for layer_num, layer_offset in enumerate(layer_offsets):
+            for i, choice in enumerate(choices[layer_num]):
+                row = i // num_cols
+                col = i % num_cols
+                layers[layer_num][
+                    row * chars.shape[1]
+                    + layer_offset[0] : (row + 1) * chars.shape[1]
+                    + layer_offset[0],
+                    col * chars.shape[2]
+                    + layer_offset[1] : (col + 1) * chars.shape[2]
+                    + layer_offset[1],
+                ] = chars[choice]
+        mockup = np.prod(layers, axis=0)
 
     # Padded chars are only used for user-facing mockups - they can stay as uint8
     # padded_chars = np.array([c.padded for c in charSet.chars], dtype="uint8")
@@ -265,7 +289,7 @@ def kword(
                 layer_offset,
                 asymmetry=asymmetry,
                 mode=search,
-                temperature=0.001 / (loop_num + 1),
+                temperature=initTemp / (loop_num + 1),
             )
 
             n_comparisons += comparisons
@@ -297,6 +321,7 @@ def kword(
     print(f"Total comparisons: {n_comparisons}")
     print(f"Time per comparison: {(endTime - startTime) / n_comparisons} ms")
     return
+
 
 @njit(parallel=True, fastmath=True)
 # @njit
