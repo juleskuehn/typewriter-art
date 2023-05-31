@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import json
 import time
+import pickle
 
 from char import CharSet
 from generator import Generator
@@ -186,59 +187,193 @@ def kword(
                 : resizedTarget.shape[0], : resizedTarget.shape[1]
             ] = resizedTarget[: origShape[0], :]
             minShape = resizedTarget.shape
-    #################################################
-    # Generate mockup (the part that really matters!)
-    generator = Generator(
-        newTarget,
-        newTarget,
-        charSet,
-        targetShape=targetImg.shape,
-        targetPadding=targetPadding,
-        shrunkenTargetPadding=targetPadding,
-        asym=asymmetry,
-        initTemp=initTemp,
-        subtractiveScale=subtractiveScale,
-        selectOrder=selectOrder,
-        basePath=basePath,
-        tempStep=tempStep,
-        scaleTemp=scaleTemp,
-        blendFunc=blendFunc,
-        tempReheatFactor=tempReheatFactor,
-    )
-    if resume != False:
-        if type(resume) == type("hi"):
-            generator.load_state(basePath + resume)
-        else:
-            generator.load_state()
 
-    # if resume != False:
-    #     initMode = None
-    # THIS IS THE LINE THAT MATTERS
+    # # 2023 rewrite: pad target so it has a border of 1/2 character width/height on every side
+    newTarget = np.pad(
+        newTarget,
+        ((charHeight // 2, charHeight // 2), (charWidth // 2, charWidth // 2)),
+        "constant",
+        constant_values=255,
+    )
+    # If the bottom charHeight rows are fully white, remove them
+    if np.all(newTarget[-charHeight:, :] == 255):
+        newTarget = newTarget[:-charHeight, :]
+
+    ################
+    # 2023 rewrite #
+    ################
+    num_rows = newTarget.shape[0] // charHeight
+    num_cols = newTarget.shape[1] // charWidth
+    # layer_offsets = [
+    #     (0, 0),
+    #     (0, charHeight // 2),
+    #     (charWidth // 2, 0),
+    #     (charWidth // 2, charHeight // 2),
+    # ]
+    layer_offsets = [(0, 0), (0, 0), (0, 0), (0, 0)]  # Keep it simple to test
+    num_loops = 100
+
+    # Internal representations of images should be float32 for easy math
+    target = newTarget.astype("float32") / 255
+    chars = np.array([c.cropped for c in charSet.chars], dtype="float32") / 255
+    assert target.shape[0] % chars.shape[1] == 0
+    assert target.shape[1] % chars.shape[2] == 0
+    mockup = np.full(target.shape, 1, dtype="float32")
+
+    # Layers is a 3D array of mockups, one per layer
+    layers = np.array([mockup.copy() for _ in layer_offsets], dtype="float32")
+
+    # Choices is a 3D array of indices for chars selected per layer
+    choices = np.zeros((layers.shape[0], num_rows * num_cols), dtype="uint16")
+
+    # Padded chars are only used for user-facing mockups - they can stay as uint8
+    # padded_chars = np.array([c.padded for c in charSet.chars], dtype="uint8")
+    # if resume:
+    #     with open(f"{basePath}results/resume.pkl", "rb") as input:
+    #         state = pickle.load(input)
+    #     print("loaded resume state (background image)")
+    #     layers.push(state["mockupImg"])
+
     startTime = time.perf_counter_ns()
-    generator.generateLayers(
-        compareMode=mode,
-        numAdjustPasses=numAdjust,
-        show=show,
-        init=initMode,
-        initOnly=initOnly,
-        initPriority=initPriority,
-        initComposite=initComposite,
-        search=search,
-        maxVisits=maxVisits,
-        printEvery=printEvery,
-    )
+    # Layer optimization passes
+    for loop_num in range(num_loops):
+        for layer_num, layer_offset in enumerate(layer_offsets):
+            # Composite all other layers
+            bg = np.prod(np.delete(layers, layer_num, axis=0), axis=0)
+
+            choices[layer_num], mockup = layer_optimization_pass(
+                bg,
+                mockup,
+                target,
+                chars,
+                choices[layer_num],
+                layer_offset,
+            )
+
+            # Update the layer image based on the returned choices
+            for i, choice in enumerate(choices[layer_num]):
+                row = i // num_cols
+                col = i % num_cols
+                replace_this_slice = layers[layer_num][
+                    row * chars.shape[1]
+                    + layer_offset[0] : (row + 1) * chars.shape[1]
+                    + layer_offset[0],
+                    col * chars.shape[2]
+                    + layer_offset[1] : (col + 1) * chars.shape[2]
+                    + layer_offset[1],
+                ]
+                if replace_this_slice.shape != chars[choice].shape:
+                    continue
+                layers[layer_num][
+                    row * chars.shape[1]
+                    + layer_offset[0] : (row + 1) * chars.shape[1]
+                    + layer_offset[0],
+                    col * chars.shape[2]
+                    + layer_offset[1] : (col + 1) * chars.shape[2]
+                    + layer_offset[1],
+                ] = chars[choice]
+
+            # Write the mockup image to disk
+            mockupImg = np.array(
+                mockup * 255, dtype="uint8"
+            )  # convert to uint8 for display
+            mockupImg = cv2.cvtColor(mockupImg, cv2.COLOR_GRAY2BGR)
+            cv2.imwrite(
+                f"{basePath}results/mockup_{loop_num}_{layer_num}.png", mockupImg
+            )
+
     endTime = time.perf_counter_ns()
+    print(f"Layer optimization took {(endTime - startTime) / 1e9} seconds")
+    return
 
-    # print(generator.comboGrid)
-    # plt.style.use('default')
-    # plt.axis('off')
-    # plt.imshow(generator.mockupImg, cmap='gray', vmin=0, vmax=255)
-    # plt.show()
 
-    #!!! Download zip of each run including settings, typeables, mockup, comboGrid, graphs, data for graphs
+def layer_optimization_pass(
+    bg,
+    mockup,
+    target,
+    chars,
+    choices,
+    layer_offset,
+    asymmetry=0.1,
+    mode="greedy",
+    temperature=0.1,
+):
+    num_cols = target.shape[1] // chars.shape[2]
 
-    ###################
+    # Pad the images with white by the layer_offset
+    target, mockup, bg = (
+        np.pad(img, ((layer_offset[0], 0), (layer_offset[1], 1)), "constant")
+        for img in (target, mockup, bg)
+    )
 
+    for i, prev_choice in enumerate(choices):
+        row = i // num_cols
+        col = i % num_cols
+        # Get the slices of target, mockup and background for this position
+        target_slice, mockup_slice, bg_slice = (
+            img[
+                row * chars.shape[1]
+                + layer_offset[0] : (row + 1) * chars.shape[1]
+                + layer_offset[0],
+                col * chars.shape[2]
+                + layer_offset[1] : (col + 1) * chars.shape[2]
+                + layer_offset[1],
+            ]
+            for img in (target, mockup, bg)
+        )
+        # Get the character that was previously chosen for this position
+        cur_composite = mockup_slice
+        err = target_slice - cur_composite
+        asym_err = np.where(err > 0, err * (1 + asymmetry), err)
+        cur_amse = np.mean(np.square(asym_err))
+        # Try other characters in this position
+        for new_choice in range(chars.shape[0]):
+            if new_choice == prev_choice:
+                continue
+            new_char = chars[new_choice]
+            new_composite = bg_slice * new_char
+            err = target_slice - new_composite
+            asym_err = np.where(err > 0, err * (1 + asymmetry), err)
+            new_amse = np.mean(np.square(asym_err))
+            if mode == "greedy":
+                #  Greedy: Find the best choice
+                if new_amse < cur_amse:
+                    choices[i] = new_choice
+                    cur_amse = new_amse
+                    cur_composite = new_composite
+            elif mode == "sim_anneal":
+                # Simulated annealing: Find a (usually) better choice
+                delta = cur_amse - new_amse
+                if delta > 0:
+                    choices[i] = new_choice
+                    cur_amse = new_amse
+                    cur_composite = new_composite
+                    break
+                try:
+                    p = np.exp(delta / temperature)
+                    rand_choice = p > np.random.rand()
+                except:
+                    rand_choice = False
+                if rand_choice:
+                    choices[i] = new_choice
+                    cur_amse = new_amse
+                    cur_composite = new_composite
+                    break
+        # End character comparison loop for this position
+        mockup[
+            row * chars.shape[1]
+            + layer_offset[0] : (row + 1) * chars.shape[1]
+            + layer_offset[0],
+            col * chars.shape[2]
+            + layer_offset[1] : (col + 1) * chars.shape[2]
+            + layer_offset[1],
+        ] = cur_composite
+
+    return choices, mockup
+
+
+def old_stuff():
+    return
     # Save mockup image
     mockupImg = generator.mockupImg
     if targetPadding > 0:  # Crop and resize mockup to match target image
