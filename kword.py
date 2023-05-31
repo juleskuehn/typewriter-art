@@ -14,22 +14,22 @@ def kword(
     charset_path="hermes",
     target_fn="mwdog_crop.png",
     rowLength=20,
-    num_loops=10,
+    num_loops=5,
     initMode="blank",
     asymmetry=0.1,
-    search="greedy",
+    search="simAnneal",
     initTemp=0.001,
 ):
     base_path = os.getcwd()
-    charSet, xChange, yChange = prep_charset(charset_path, base_path)
+    chars, xChange, yChange = prep_charset(charset_path, base_path)
 
     targetImg = cv2.imread(f"{base_path}/images/{target_fn}", cv2.IMREAD_GRAYSCALE)
 
-    charHeight, charWidth = charSet.get(0).cropped.shape
+    charHeight, charWidth = chars[0].shape
     resizedTarget, targetPadding, rowLength = resizeTarget(
         targetImg,
         rowLength,
-        charSet.get(0).cropped.shape,
+        (charHeight, charWidth),
         (xChange, yChange),
     )
 
@@ -59,7 +59,6 @@ def kword(
 
     # Internal representations of images should be float32 for easy math
     target = newTarget.astype("float32") / 255
-    chars = np.array([c.cropped for c in charSet.chars], dtype="float32") / 255
     assert target.shape[0] % chars.shape[1] == 0
     assert target.shape[1] % chars.shape[2] == 0
     mockup = np.full(target.shape, 1, dtype="float32")
@@ -330,7 +329,7 @@ def main():
         charset_path="smith_corona",
         target_fn="mwdog_crop.png",
         rowLength=20,
-        num_loops=20,
+        num_loops=5,
         initMode="blank",
         asymmetry=0.1,
         search="simAnneal",

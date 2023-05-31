@@ -243,15 +243,9 @@ def prep_charset(config_dir, base_path=""):
 
     config_dict["image_path"] = os.path.join(config_dir, config_dict["image_path"])
 
-    padded, (xCropPos, yCropPos), (xChange, yChange) = chop_charset(
+    chars, (xCropPos, yCropPos), (xChange, yChange) = chop_charset(
         basePath=base_path,
         **config_dict,
     )
-    cropSettings = {
-        "xPad": config_dict["xPad"],
-        "yPad": config_dict["yPad"],
-        "xCropPos": xCropPos,
-        "yCropPos": yCropPos,
-    }
-    charSet = CharSet(padded, cropSettings, config_dict["excludeChars"])
-    return charSet, xChange, yChange
+    chars = np.array(chars, dtype="float32") / 255
+    return chars, xChange, yChange
