@@ -34,12 +34,6 @@ def resizeTarget(im, rowLength, charShape, charChange):
     return im, newHeight - outHeight, rowLength
 
 
-def brightenTarget(im, blackLevel):
-    imBlack = 0  # Could test target image for this, or just leave as 0
-    diff = blackLevel - imBlack
-    return np.array(im * ((255 - diff) / 255) + diff, dtype="uint8")
-
-
 # Returns a mockup image, with the same size as the target image
 def genMockup(
     comboGrid, generator, targetShape, targetPadding, crop=True, addFixed=True
@@ -72,19 +66,10 @@ def genMockup(
     return resized if crop else mockup
 
 
-# Returns ([cropped images], [padded images], (cropPosX, cropPosY))
-# Cropped images are used for comparison (selection)
-# Padded images can be used for reconstruction (mockup) but are not strictly necessary
 def chop_charset(
     image_path="hermes.png",
-    numX=79,
-    numY=7,
-    startX=0,
-    startY=0,
-    xPad=0,
-    yPad=0,
-    shrinkX=1,
-    shrinkY=1,
+    slicesX=79,
+    slicesY=7,
     blankSpace=True,
     whiteThreshold=0.95,
     basePath="",
@@ -92,143 +77,65 @@ def chop_charset(
     **kwargs,
 ):
     """
-    The trick is that each quadrant needs to be integer-sized (unlikely this will occur naturally), while maintaining proportionality. So we do some resizing and keep track of the changes in proportion:
-
-    1. Rotate/crop scanned image to align with character boundaries
-    - . (period) character used for this purpose, bordering the charset:
-    .........
-    . A B C .
-    . D E F .
-    .........
-    - image is cropped so that each surrounding period is cut in half
-    This is done manually, before running this script.
-
-    2. Resize UP cropped image (keeping proportion) to be evenly divisible by (number of characters in the X dimension * 2). The * 2 is because we will be chopping the characters into quadrants.
-    3. Resize in the y dimension (losing proportion) to be evenly divisible by (number of characters in the Y dimension * 2). Save (resizedY / originalY) as propChange.
-
-    4. Now the charset image can be evenly sliced into quadrants. The target image (ie. photograph of a face, etc) must be resized in the Y dimension by propChange before processing. Then, the output from processing (ie. the typed mockup) must also be resized by 1/propChange.
-
-    The issue of characters overextending their bounds cannot be fully addressed without substantial complication. We can pad the images during chopping, and then find a crop window (character size before padding) that maintains the most information from the padded images, ie. the sum of the cropped information is lowest across the character set.
+    Crops character images from a charset image
     """
     im = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    # im = imread(fn)[:,:,0]*255
-    # print("charset has shape", im.shape)
-    # numX = 80  # Number of columns
-    # numY = 8  # Number of rows
 
-    stepX = im.shape[1] / numX  # Slice width
-    stepY = im.shape[0] / numY  # Slice height
+    stepX = im.shape[1] / slicesX  # Slice width
+    stepY = im.shape[0] / slicesY  # Slice height
 
-    # Need to resize charset such that stepX and stepY are each multiples of 2
-    # After this, we can shrink without loss of proportion
-    # shrinkFactor = 2
-    newStepX = ceil(stepX / shrinkX)
-    newStepY = ceil(stepY / shrinkY)
+    newStepX = ceil(stepX)
+    newStepY = ceil(stepY)
 
+    # Useful to have even sizes for the usual offset of half characters
     if newStepX % 2 != 0:
         newStepX += 1
     if newStepY % 2 != 0:
         newStepY += 1
-    newStepX *= shrinkX
-    newStepY *= shrinkY
 
     xChange = stepX / newStepX
     yChange = stepY / newStepY
 
-    im = cv2.resize(
-        im, dsize=(newStepX * numX, newStepY * numY), interpolation=cv2.INTER_AREA
+    im = (
+        np.array(
+            cv2.resize(
+                im,
+                dsize=(newStepX * slicesX, newStepY * slicesY),
+                interpolation=cv2.INTER_AREA,
+            ),
+            dtype="float32",
+        )
+        / 255
     )
-    # print("max char level:", np.max(im), "min char level:", np.min(im))
-    # print("Actual character size", stepX, stepY)
-    # print("Resized char size", newStepX, newStepY)
-    # print("resized charset has shape", im.shape)
 
-    # These need manual tuning per charset image
-    startX = int(startX * newStepX)  # Crop left px
-    startY = int(startY * newStepY)  # Crop top px
-
-    tiles = []
-    padded = []
-
-    for y in range(newStepY, im.shape[0], newStepY):
-        for x in range(newStepX, im.shape[1], newStepX):
-            if np.sum(im[y : y + newStepY, x : x + newStepX][:, :]) < (
-                newStepX * newStepY * whiteThreshold * 255
-            ):
-                tiles.append(
-                    im[y - yPad : y + newStepY + yPad, x - xPad : x + newStepX + xPad][
-                        :, :
-                    ]
-                )
-    # Append blank tile
+    # Chop character image
+    chars = []
+    for y in range(slicesY):
+        for x in range(slicesX):
+            startX = int(x * newStepX)
+            startY = int(y * newStepY)
+            endX = int((x + 1) * newStepX)
+            endY = int((y + 1) * newStepY)
+            char = im[startY:endY, startX:endX]
+            if np.mean(char) < whiteThreshold:
+                chars.append(char)
+    # Prepend blank tile
     if blankSpace:
-        tiles.insert(
-            0, np.full((newStepY + yPad * 2, newStepX + xPad * 2), 255.0, dtype="uint8")
-        )
+        chars.insert(0, np.full((newStepY, newStepX), 1.0, dtype="float32"))
 
-    # PADDED CHARS
-    xPad = 10
-    yPad = 10
-    for y in range(newStepY, im.shape[0], newStepY):
-        for x in range(newStepX, im.shape[1], newStepX):
-            if np.sum(im[y : y + newStepY, x : x + newStepX][:, :]) < (
-                newStepX * newStepY * whiteThreshold * 255
-            ):
-                # print('x and y:', y-yPad, x-xPad)
-                padded.append(
-                    im[y - yPad : y + newStepY + yPad, x - xPad : x + newStepX + xPad][
-                        :, :
-                    ]
-                )
-    # Append blank tile
-    if blankSpace:
-        padded.insert(
-            0, np.full((newStepY + yPad * 2, newStepX + xPad * 2), 255.0, dtype="uint8")
-        )
-    xPad = 0
-    yPad = 0
-
-    # print(len(tiles), 'characters chopped.')
-    # print(len(padded), 'padded chars.')
-
-    a = np.array(tiles)
-    #####
-    # THIS PART ISN"T USED ???
-    maxCroppedOut = -inf
-    maxCropXY = (0, 0)  # Top left corner of crop window
-
-    ySize, xSize = a[0].shape
-    ySize -= yPad * 2  # Target crop
-    xSize -= xPad * 2  # Target crop
-
-    # Try all the crops and find the best one (the one with most white)
-    for y in range(yPad * 2):
-        for x in range(xPad * 2):
-            croppedOut = np.sum(a) - np.sum(a[:, y : y + ySize, x : x + xSize])
-            if croppedOut > maxCroppedOut:
-                maxCroppedOut = croppedOut
-                maxCropXY = (x, y)
-
-    x, y = maxCropXY
-    # print('cropped at ', x, y)
-    # np.save('cropped_
-
-    # PADDED CHARS
-    filteredChars = [char for i, char in enumerate(padded) if i + 1 not in excludeChars]
-    import os
+    chars = [char for i, char in enumerate(chars) if i + 1 not in excludeChars]
 
     d = os.path.join(basePath, "results", "chars")
     filesToRemove = [os.path.join(d, f) for f in os.listdir(d)]
     for f in filesToRemove:
         os.remove(f)
-    for i, char in enumerate(filteredChars):
-        # print(i, char.shape)
+    for i, char in enumerate(chars):
         try:
-            cv2.imwrite(os.path.join(d, f"{i+1}.png"), char)
+            cv2.imwrite(os.path.join(d, f"{i+1}.png"), char * 255)
         except:
             continue
 
-    return tiles, (x, y), (xChange, yChange)
+    return np.array(chars, dtype="float32"), xChange, yChange
 
 
 def prep_charset(config_dir, base_path=""):
@@ -243,9 +150,8 @@ def prep_charset(config_dir, base_path=""):
 
     config_dict["image_path"] = os.path.join(config_dir, config_dict["image_path"])
 
-    chars, (xCropPos, yCropPos), (xChange, yChange) = chop_charset(
+    chars, xChange, yChange = chop_charset(
         basePath=base_path,
         **config_dict,
     )
-    chars = np.array(chars, dtype="float32") / 255
     return chars, xChange, yChange

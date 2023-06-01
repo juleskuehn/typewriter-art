@@ -1,0 +1,33 @@
+{
+    "charset_name": "Smith-Corona (3 weights)",
+    "image_path": "sc-3tone.png",
+    "slicesX": 50,
+    "slicesY": 34,
+    "excludeChars": [
+        31,
+        41,
+        48,
+        50,
+        66,
+        69,
+        75,
+        76,
+        69,
+        76,
+        88,
+        112,
+        132,
+        135,
+        137,
+        139,
+        151,
+        155,
+        157,
+        160,
+        162,
+        193,
+        200
+    ],
+    "whiteThreshold": 0.97,
+    "blankSpace": true
+}
