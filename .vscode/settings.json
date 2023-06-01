@@ -5,12 +5,12 @@
     "editor.formatOnSave": true,
     // Enable formatting on save for python files
     "[python]": {
-        "editor.formatOnSave": true,
         "editor.defaultFormatter": "ms-python.black-formatter",
-        // Set line length to 79
-        "editor.rulers": [
-            79
-        ],
     },
-    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": true,
+    },
+    "[jsonc]": {
+        "editor.defaultFormatter": "vscode.json-language-features"
+    },
 }

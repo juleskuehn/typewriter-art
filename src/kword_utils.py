@@ -1,17 +1,17 @@
-import numpy as np
-import cv2
-from math import inf, ceil
 import json
 import os
+from math import ceil
 
-from generator_utils import compositeAdj, getSliceBounds
-from char import CharSet
+import cv2
+import numpy as np
 
 
-# Resizes targetImg to be a multiple of character width
-# Scales height to correct for change in proportion
-# Pads height to be a multiple of character height
 def resizeTarget(im, rowLength, charShape, charChange):
+    """
+    Resizes targetImg to be a multiple of character width
+    Scales height to correct for change in proportion
+    Pads height to be a multiple of character height
+    """
     charHeight, charWidth = charShape
     xChange, yChange = charChange
     inHeight, inWidth = im.shape
@@ -32,38 +32,6 @@ def resizeTarget(im, rowLength, charShape, charChange):
     else:
         newHeight = inHeight
     return im, newHeight - outHeight, rowLength
-
-
-# Returns a mockup image, with the same size as the target image
-def genMockup(
-    comboGrid, generator, targetShape, targetPadding, crop=True, addFixed=True
-):
-    mockupCopy = generator.mockupImg.copy()
-    gridCopy = generator.comboGrid.grid.copy()
-    generator.comboGrid.grid = comboGrid
-    # print(generator.comboGrid)
-    for row in range(generator.rows - 1):
-        for col in range(generator.cols - 1):
-            startX, startY, endX, endY = getSliceBounds(
-                generator, row, col, shrunken=False
-            )
-            generator.mockupImg[startY:endY, startX:endX] = compositeAdj(
-                generator, row, col, addFixed=addFixed
-            )
-    # Save the new mockup, then put everything in generator back to normal
-    mockup = generator.mockupImg.copy()
-    generator.mockupImg = mockupCopy
-    generator.comboGrid.grid = gridCopy
-    # Crop and resize mockup to match target image
-    if targetPadding > 0 and crop:
-        mockup = mockup[:-targetPadding, :]
-        # print("cropped to", mockup.shape)
-    # return mockup
-    resized = cv2.resize(
-        mockup, dsize=(targetShape[1], targetShape[0]), interpolation=cv2.INTER_AREA
-    )
-    # print("mockup has shape", resized.shape)
-    return resized if crop else mockup
 
 
 def chop_charset(
