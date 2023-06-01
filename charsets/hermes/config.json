@@ -3,9 +3,7 @@
     "image_path": "hermes-darker.png",
     "slicesX": 79,
     "slicesY": 7,
-    "xPad": 4,
-    "yPad": 4,
     "excludeChars": [],
-    "whiteThreshold": 0.99,
+    "whiteThreshold": 0.95,
     "blankSpace": true
 }

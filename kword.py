@@ -3,6 +3,7 @@ import cv2
 import json
 import time
 import os
+import argparse
 
 # njit
 from numba import njit, prange
@@ -11,24 +12,24 @@ from kword_utils import resizeTarget, genMockup, prep_charset
 
 
 def kword(
-    charset_path="hermes",
-    target_fn="mwdog_crop.png",
-    rowLength=20,
+    charset="hermes",
+    target="mwdog_crop.png",
+    row_length=20,
     num_loops=5,
-    initMode="blank",
+    init_mode="blank",
     asymmetry=0.1,
     search="simAnneal",
-    initTemp=0.001,
+    init_temp=0.001,
 ):
     base_path = os.getcwd()
-    chars, xChange, yChange = prep_charset(charset_path, base_path)
+    chars, xChange, yChange = prep_charset(charset, base_path)
 
-    targetImg = cv2.imread(f"{base_path}/images/{target_fn}", cv2.IMREAD_GRAYSCALE)
+    targetImg = cv2.imread(f"{base_path}/images/{target}", cv2.IMREAD_GRAYSCALE)
 
     charHeight, charWidth = chars[0].shape
     resizedTarget, targetPadding, rowLength = resizeTarget(
         targetImg,
-        rowLength,
+        row_length,
         (charHeight, charWidth),
         (xChange, yChange),
     )
@@ -83,8 +84,8 @@ def kword(
     # Choices is a 3D array of indices for chars selected per layer
     choices = np.zeros((layers.shape[0], num_rows * num_cols), dtype="uint16")
 
-    if initMode == "random":
-        choices = np.random.randint(0, len(charSet.chars), choices.shape)
+    if init_mode == "random":
+        choices = np.random.randint(0, chars.shape[0], choices.shape)
         for layer_num, layer_offset in enumerate(layer_offsets):
             for i, choice in enumerate(choices[layer_num]):
                 row = i // num_cols
@@ -119,7 +120,7 @@ def kword(
                 layer_offset,
                 asymmetry=asymmetry,
                 mode=search,
-                temperature=initTemp / (loop_num + 1),
+                temperature=init_temp / (loop_num + 1),
             )
 
             n_comparisons += comparisons
@@ -325,16 +326,59 @@ def save_results():
 
 
 def main():
-    kword(
-        charset_path="smith_corona",
-        target_fn="mwdog_crop.png",
-        rowLength=20,
-        num_loops=5,
-        initMode="blank",
-        asymmetry=0.1,
-        search="simAnneal",
-        initTemp=0.01,
+    # Parse arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--charset",
+        type=str,
+        default="sc-2",
+        help="Path to charset folder containing config.json and image",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="mwdog_crop.png",
+        help="Path to target image",
+    )
+    parser.add_argument(
+        "--row_length",
+        type=int,
+        default=20,
+        help="Number of characters per row (determines image size)",
+    )
+    parser.add_argument(
+        "--num_loops",
+        type=int,
+        default=10,
+        help="Number of times to optimize each layer",
+    )
+    parser.add_argument(
+        "--init_mode",
+        type=str,
+        default="blank",
+        help="Set as 'random' to start optimization with random characters",
+    )
+    parser.add_argument(
+        "--asymmetry",
+        type=float,
+        default=0.1,
+        help="Asymmetry of mean squared error function",
+    )
+    parser.add_argument(
+        "--search",
+        type=str,
+        default="simAnneal",
+        help="Search algorithm. Options: 'simAnneal', 'greedy'",
+    )
+    parser.add_argument(
+        "--init_temp",
+        type=float,
+        default=0.001,
+        help="Initial temperature for simulated annealing",
+    )
+
+    args = parser.parse_args()
+    kword(**vars(args))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,8 @@
 {
-    "charset_name": "Smith-Corona (hard & soft)",
+    "charset_name": "Smith-Corona (2 weights)",
     "image_path": "lightRibbonPadded.png",
     "slicesX": 79,
     "slicesY": 11,
-    "xPad": 0,
-    "yPad": 0,
     "excludeChars": [
         19,
         36,
