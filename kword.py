@@ -143,12 +143,14 @@ def kword(
                 mockup * 255, dtype="uint8"
             )  # convert to uint8 for display
             mockupImg = cv2.cvtColor(mockupImg, cv2.COLOR_GRAY2BGR)
-            cv2.imwrite(
-                os.path.join(
-                    base_path, "results", f"mockup_{loop_num}_{layer_num}.png"
-                ),
-                mockupImg,
-            )
+            # cv2.imwrite(
+            #    os.path.join(
+            #        base_path, "results", f"mockup_{loop_num}_{layer_num}.png"
+            #    ),
+            #    mockupImg,
+            # )
+            cv2.imshow("mockup", mockupImg)
+            cv2.waitKey(10)
 
     endTime = time.perf_counter_ns()
     print(f"Layer optimization took {(endTime - startTime) / 1e9} seconds")
@@ -349,13 +351,13 @@ def main():
     parser.add_argument(
         "--num_loops",
         type=int,
-        default=10,
+        default=50,
         help="Number of times to optimize each layer",
     )
     parser.add_argument(
         "--init_mode",
         type=str,
-        default="blank",
+        default="random",
         help="Set as 'random' to start optimization with random characters",
     )
     parser.add_argument(
