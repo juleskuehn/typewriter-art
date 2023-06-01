@@ -1,14 +1,13 @@
-import numpy as np
-import cv2
-import json
-import time
-import os
 import argparse
+import json
+import os
+import time
 
-# njit
+import cv2
+import numpy as np
 from numba import njit, prange
 
-from kword_utils import resizeTarget, genMockup, prep_charset
+from kword_utils import prep_charset, resizeTarget
 
 
 def kword(
