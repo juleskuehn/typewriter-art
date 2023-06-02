@@ -209,7 +209,7 @@ def main():
     parser.add_argument(
         "--layers",
         type=str,
-        default="4x1",
+        default="4x2",
         help="Key to layers.json for offsets (how many layers, where)",
     )
 
