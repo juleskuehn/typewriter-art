@@ -43,7 +43,7 @@ kword(
     # Add an overtype pass. Expects to find '{basePath}results/resume.pkl'
     resume=False,  # [True, False, 'filename']
     # Initial state
-    initMode=None,  # ['euclidean', 'blend', 'angular', 'random', None]
+    initMode="random",  # ['euclidean', 'blend', 'angular', 'random', None]
     initOnly=False,  # Stop after initializing (don't optimize)
     initPriority=True,  # Initialize in priority order (priority only calculated once)
     initComposite=True,  # Subtract already placed ink from target image
