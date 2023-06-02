@@ -155,8 +155,18 @@ def kword(
 
             # Show the mockup
             if display > 0 and loop_num % display == 0:
+                shrink = False
                 mockupImg = np.array(mockup * 255, dtype="uint8")
+                if max(mockupImg.shape) > 1600:
+                    shrink = True
                 mockupImg = cv2.cvtColor(mockupImg, cv2.COLOR_GRAY2BGR)
+                if shrink:
+                    mockupImg = cv2.resize(
+                        mockupImg,
+                        (0, 0),
+                        fx=1600 / max(mockupImg.shape),
+                        fy=1600 / max(mockupImg.shape),
+                    )
                 cv2.imshow("mockup", mockupImg)
                 cv2.waitKey(1)
 
