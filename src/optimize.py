@@ -20,6 +20,7 @@ def kword(
     asymmetry=0.1,
     search="simAnneal",
     init_temp=0.001,
+    display=True,
 ):
     base_path = os.getcwd()
     chars, xChange, yChange = prep_charset(charset, base_path)
@@ -36,12 +37,15 @@ def kword(
 
     num_rows = newTarget.shape[0] // charHeight
     num_cols = newTarget.shape[1] // charWidth
-    
+
     # Load layer offsets from layers.json
     with open(os.path.join(base_path, "layers.json"), "r") as f:
-        layer_offsets = json.load(f)[layers]
+        fractional_layer_offsets = json.load(f)[layers]
 
-    layer_offsets = [(int(charHeight * o[0]), int(charWidth * o[1])) for o in layer_offsets]
+    layer_offsets = [
+        (int(charHeight * o[0]), int(charWidth * o[1]))
+        for o in fractional_layer_offsets
+    ]
 
     # Internal representations of images should be float32 for easy math
     target = newTarget.astype("float32") / 255
@@ -89,7 +93,7 @@ def kword(
     # padded_chars = np.array([c.padded for c in charSet.chars], dtype="uint8")
     err_over_time = np.zeros(num_loops * len(layer_offsets))
     fig = plt.figure()
-    line, = plt.plot(err_over_time)
+    (line,) = plt.plot(err_over_time)
 
     startTime = time.perf_counter_ns()
     n_comparisons = 0
@@ -97,7 +101,11 @@ def kword(
     for loop_num in range(num_loops):
         for layer_num, layer_offset in enumerate(layer_offsets):
             # Composite all other layers
-            bg = np.prod(np.delete(layers, layer_num, axis=0), axis=0)
+            # bg = np.prod(np.delete(layers, layer_num, axis=0), axis=0)
+            # The above code doesn't get optimized by numba. Rewrite more explicitly
+            bg = layers[(layer_num + 1) % len(layer_offsets)]
+            for i in range(2, len(layer_offsets)):
+                bg = bg * layers[(layer_num + i) % len(layer_offsets)]
 
             choices[layer_num], mockup, comparisons, err = layer_optimization_pass(
                 bg,
@@ -113,18 +121,19 @@ def kword(
 
             n_comparisons += comparisons
 
-            err_over_time[loop_num * len(layer_offsets) + layer_num:] = err
-            # update data
-            line.set_ydata(err_over_time)
-            # update y axis
-            plt.ylim(0, np.max(err_over_time))
-            # convert it to an OpenCV image/numpy array
-            fig.canvas.draw()
-            # convert canvas to image
-            graph_image = np.array(fig.canvas.get_renderer()._renderer)
-            # it still is rgb, convert to opencv's default bgr
-            graph_image = cv2.cvtColor(graph_image,cv2.COLOR_RGB2BGR)
-            cv2.imshow("plot", graph_image)
+            err_over_time[loop_num * len(layer_offsets) + layer_num :] = err
+            if display > 0 and loop_num % display == 0:
+                # update data
+                line.set_ydata(err_over_time)
+                # update y axis
+                plt.ylim(0, np.max(err_over_time))
+                # convert it to an OpenCV image/numpy array
+                fig.canvas.draw()
+                # convert canvas to image
+                graph_image = np.array(fig.canvas.get_renderer()._renderer)
+                # it still is rgb, convert to opencv's default bgr
+                graph_image = cv2.cvtColor(graph_image, cv2.COLOR_RGB2BGR)
+                cv2.imshow("plot", graph_image)
 
             # Update the layer image based on the returned choices
             for i, choice in enumerate(choices[layer_num]):
@@ -140,15 +149,48 @@ def kword(
                 ] = chars[choice]
 
             # Show the mockup
-            mockupImg = np.array(
-                mockup * 255, dtype="uint8"
-            )
-            mockupImg = cv2.cvtColor(mockupImg, cv2.COLOR_GRAY2BGR)
-            cv2.imshow("mockup", mockupImg)
-            cv2.waitKey(10)
+            if display > 0 and loop_num % display == 0:
+                mockupImg = np.array(mockup * 255, dtype="uint8")
+                mockupImg = cv2.cvtColor(mockupImg, cv2.COLOR_GRAY2BGR)
+                cv2.imshow("mockup", mockupImg)
+                cv2.waitKey(1)
 
     endTime = time.perf_counter_ns()
-    cv2.waitKey(0)
+    if display > 0:
+        cv2.waitKey(0)
+
+    # Save the final images
+    cv2.imwrite(os.path.join(base_path, "results", "final.png"), mockup * 255)
+    # Change the layer offsets back to the original values (proportions of charW / charH)
+    for layer_num, layer_offset in enumerate(fractional_layer_offsets):
+        cv2.imwrite(
+            os.path.join(
+                base_path, "results", f"layer_{layer_offset[0]}_{layer_offset[1]}.png"
+            ),
+            layers[layer_num] * 255,
+        )
+    # Save the final choices as a JSON file
+    choices_dict = {}
+    for layer_num, layer_offset in enumerate(fractional_layer_offsets):
+        choices_dict[f"{layer_offset[0]}_{layer_offset[1]}"] = choices[
+            layer_num
+        ].tolist()
+    with open(os.path.join(base_path, "results", "choices.json"), "w") as f:
+        json.dump(choices_dict, f)
+
+    # Save the error plot over time
+    # update data
+    line.set_ydata(err_over_time)
+    # update y axis
+    plt.ylim(0, np.max(err_over_time))
+    # convert it to an OpenCV image/numpy array
+    fig.canvas.draw()
+    # convert canvas to image
+    graph_image = np.array(fig.canvas.get_renderer()._renderer)
+    # it still is rgb, convert to opencv's default bgr
+    graph_image = cv2.cvtColor(graph_image, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(os.path.join(base_path, "results", "error_over_time.png"), graph_image)
+
     print(f"Layer optimization took {(endTime - startTime) / 1e9} seconds")
     print(f"Total comparisons: {n_comparisons}")
     print(f"Time per comparison: {(endTime - startTime) / n_comparisons} ms")
@@ -211,6 +253,12 @@ def main():
         type=str,
         default="4x2",
         help="Key to layers.json for offsets (how many layers, where)",
+    )
+    parser.add_argument(
+        "--display",
+        type=int,
+        default=1,
+        help="Display the mockup every X iterations (1 == most often) or not at all (0)",
     )
 
     args = parser.parse_args()

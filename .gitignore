@@ -1,8 +1,4 @@
-src/results/*.json
-src/results/*.txt
-src/results/*.pkl
-src/results/*.png
-src/results/chars/*.png
+*/results/*
 *.ann*
 __pycache__
 *.DS_Store
