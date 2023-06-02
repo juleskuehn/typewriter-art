@@ -94,6 +94,7 @@ def kword(
     err_over_time = np.zeros(num_loops * len(layer_offsets))
     fig = plt.figure()
     (line,) = plt.plot(err_over_time)
+    (point,) = plt.plot(0, 0, "ro")
 
     startTime = time.perf_counter_ns()
     n_comparisons = 0
@@ -125,6 +126,10 @@ def kword(
             if display > 0 and loop_num % display == 0:
                 # update data
                 line.set_ydata(err_over_time)
+                point.set_xdata(loop_num * len(layer_offsets) + layer_num)
+                point.set_ydata(
+                    err_over_time[loop_num * len(layer_offsets) + layer_num]
+                )
                 # update y axis
                 plt.ylim(0, np.max(err_over_time))
                 # convert it to an OpenCV image/numpy array
@@ -181,8 +186,11 @@ def kword(
     # Save the error plot over time
     # update data
     line.set_ydata(err_over_time)
+    point.set_xdata(loop_num * len(layer_offsets) + layer_num)
+    point.set_ydata(err_over_time[loop_num * len(layer_offsets) + layer_num])
     # update y axis
     plt.ylim(0, np.max(err_over_time))
+
     # convert it to an OpenCV image/numpy array
     fig.canvas.draw()
     # convert canvas to image
@@ -221,7 +229,7 @@ def main():
     parser.add_argument(
         "--num_loops",
         type=int,
-        default=50,
+        default=15,
         help="Number of times to optimize each layer",
     )
     parser.add_argument(
