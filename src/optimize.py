@@ -219,63 +219,73 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--charset",
+        "-c",
         type=str,
         default="sc-2",
-        help="Path to charset folder containing config.json and image",
+        help="Path to charset folder containing config.json and image (default sc-2)",
     )
     parser.add_argument(
         "--target",
+        "-t",
         type=str,
         default="mwdog_crop.png",
-        help="Path to target image",
+        help="Path to target image in ./images (default mwdog_crop.png)",
     )
     parser.add_argument(
         "--row_length",
+        "-r",
         type=int,
-        default=20,
-        help="Number of characters per row (determines image size)",
+        default=40,
+        help="Number of characters per row; determines image size (default 40)",
     )
     parser.add_argument(
         "--num_loops",
+        "-n",
         type=int,
-        default=15,
-        help="Number of times to optimize each layer",
+        default=20,
+        help="Number of times to optimize each layer (default 20)",
     )
     parser.add_argument(
         "--init_mode",
+        "-i",
         type=str,
         default="random",
-        help="Set as 'random' to start optimization with random characters",
+        help="Start with random or blank image (default random)",
     )
     parser.add_argument(
         "--asymmetry",
+        "-a",
         type=float,
         default=0.1,
-        help="Asymmetry of mean squared error function",
+        help="Asymmetry of mean squared error function (default 0.1)",
     )
     parser.add_argument(
         "--search",
+        "-s",
         type=str,
         default="simAnneal",
-        help="Search algorithm. Options: 'simAnneal', 'greedy'",
+        help="Search algorithm. Options: 'simAnneal', 'greedy' (default simAnneal)",
     )
     parser.add_argument(
         "--init_temp",
+        "-temp",
         type=float,
         default=0.001,
-        help="Initial temperature for simulated annealing",
+        help="Initial temperature for simulated annealing (default 0.001)",
     )
     parser.add_argument(
         "--layers",
+        "-l",
         type=str,
-        default="4x2",
-        help="Key to layers.json for offsets (how many layers, where)",
+        default="16x1",
+        help="Key to layers.json for offsets - how many layers, where to place them (default 16x1)",
     )
     parser.add_argument(
         "--display",
+        "-d",
         type=int,
         default=1,
-        help="Display the mockup every X iterations (1 == most often) or not at all (0)",
+        help="Display the mockup every X iterations (1 == most often) or 0 to not display (default 1)",
     )
 
     args = parser.parse_args()
