@@ -236,7 +236,7 @@ def main():
         "-r",
         type=int,
         default=30,
-        help="Number of characters per row; determines image size (default 40)",
+        help="Number of characters per row; determines image size (default 30)",
     )
     parser.add_argument(
         "--num_loops",
