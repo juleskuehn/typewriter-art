@@ -235,14 +235,14 @@ def main():
         "--row_length",
         "-r",
         type=int,
-        default=40,
+        default=30,
         help="Number of characters per row; determines image size (default 40)",
     )
     parser.add_argument(
         "--num_loops",
         "-n",
         type=int,
-        default=20,
+        default=15,
         help="Number of times to optimize each layer (default 20)",
     )
     parser.add_argument(
