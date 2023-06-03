@@ -122,14 +122,13 @@ def kword(
 
             n_comparisons += comparisons
 
-            err_over_time[loop_num * len(layer_offsets) + layer_num :] = err
-            if display > 0 and loop_num % display == 0:
+            iteration = loop_num * len(layer_offsets) + layer_num 
+            err_over_time[iteration :] = err
+            if display > 0 and (iteration % display) == 0:
                 # update data
                 line.set_ydata(err_over_time)
-                point.set_xdata(loop_num * len(layer_offsets) + layer_num)
-                point.set_ydata(
-                    err_over_time[loop_num * len(layer_offsets) + layer_num]
-                )
+                point.set_xdata([iteration])
+                point.set_ydata([err_over_time[iteration]])
                 # update y axis
                 plt.ylim(0, np.max(err_over_time))
                 # convert it to an OpenCV image/numpy array
@@ -154,7 +153,7 @@ def kword(
                 ] = chars[choice]
 
             # Show the mockup
-            if display > 0 and loop_num % display == 0:
+            if display > 0 and (iteration % display) == 0:
                 shrink = False
                 mockupImg = np.array(mockup * 255, dtype="uint8")
                 if max(mockupImg.shape) > 1600:
