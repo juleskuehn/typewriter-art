@@ -122,8 +122,8 @@ def kword(
 
             n_comparisons += comparisons
 
-            iteration = loop_num * len(layer_offsets) + layer_num 
-            err_over_time[iteration :] = err
+            iteration = loop_num * len(layer_offsets) + layer_num
+            err_over_time[iteration:] = err
             if display > 0 and (iteration % display) == 0:
                 # update data
                 line.set_ydata(err_over_time)
@@ -179,7 +179,9 @@ def kword(
     for layer_num, layer_offset in enumerate(fractional_layer_offsets):
         cv2.imwrite(
             os.path.join(
-                base_path, "results", f"layer_{layer_offset[0]}_{layer_offset[1]}.png"
+                base_path,
+                "results",
+                f"layer_{layer_num}_{layer_offset[0]}_{layer_offset[1]}.png",
             ),
             layers[layer_num] * 255,
         )
