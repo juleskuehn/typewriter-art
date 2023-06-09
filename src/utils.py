@@ -44,13 +44,13 @@ def resizeTarget(im, rowLength, charShape, charChange):
     if np.all(im[-charHeight:, :] == 255):
         im = im[:-charHeight, :]
         newHeight -= charHeight
-    
+
     # Pixels of padding added to each side of the target image
     padding = {
-        'top': charHeight // 2,
-        'right': charWidth // 2,
-        'bottom': newHeight - outHeight + (charHeight // 2),
-        'left': charWidth // 2,
+        "top": charHeight // 2,
+        "right": charWidth // 2,
+        "bottom": newHeight - outHeight + (charHeight // 2),
+        "left": charWidth // 2,
     }
 
     return im, padding
@@ -121,7 +121,7 @@ def chop_charset(
         os.remove(f)
     for i, char in enumerate(chars):
         try:
-            cv2.imwrite(os.path.join(d, f"{i+1}.png"), char * 255)
+            cv2.imwrite(os.path.join(d, f"{i}.png"), char * 255)
         except:
             continue
 
