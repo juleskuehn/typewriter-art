@@ -1,0 +1,9 @@
+{
+    "charset_name": "Hermes (monochrome)",
+    "image_path": "hermes-darker.png",
+    "slicesX": 79,
+    "slicesY": 7,
+    "excludeChars": [],
+    "whiteThreshold": 0.95,
+    "blankSpace": true
+}

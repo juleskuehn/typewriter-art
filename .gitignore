@@ -1,9 +1,4 @@
-results/*.json
-results/*.txt
-results/*.pkl
-results/*.png
-results/chars/*.png
+*/results/*
 *.ann*
 __pycache__
-typewriter-art
-nolen
+*.DS_Store
