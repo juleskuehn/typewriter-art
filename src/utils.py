@@ -64,6 +64,7 @@ def chop_charset(
     whiteThreshold=0.95,
     basePath="",
     excludeChars=[],
+    includeChars=[],
     **kwargs,
 ):
     """
@@ -113,7 +114,10 @@ def chop_charset(
     if blankSpace:
         chars.insert(0, np.full((newStepY, newStepX), 1.0, dtype="float32"))
 
-    chars = [char for i, char in enumerate(chars) if i + 1 not in excludeChars]
+    if len(includeChars) > 0:
+        chars = [char for i, char in enumerate(chars) if i in includeChars or i == 0]
+    else:
+        chars = [char for i, char in enumerate(chars) if i + 1 not in excludeChars]
 
     d = os.path.join(basePath, "results", "chars")
     filesToRemove = [os.path.join(d, f) for f in os.listdir(d)]
