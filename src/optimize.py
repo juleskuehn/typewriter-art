@@ -21,6 +21,7 @@ def kword(
     search="simAnneal",
     init_temp=0.001,
     display=True,
+    shuffle=True,
 ):
     base_path = os.getcwd()
     chars, xChange, yChange = prep_charset(charset, base_path)
@@ -99,8 +100,15 @@ def kword(
     startTime = time.perf_counter_ns()
     n_comparisons = 0
     # Layer optimization passes
+    shuffled_layer_offsets = [
+        (layer_num, layer_offset)
+        for layer_num, layer_offset in enumerate(layer_offsets)
+    ]
     for loop_num in range(num_loops):
-        for layer_num, layer_offset in enumerate(layer_offsets):
+        if shuffle:
+            # Shuffle layer_offset order for each loop
+            np.random.shuffle(shuffled_layer_offsets)
+        for cnt, (layer_num, layer_offset) in enumerate(shuffled_layer_offsets):
             # Composite all other layers
             # bg = np.prod(np.delete(layers, layer_num, axis=0), axis=0)
             # The above code doesn't get optimized by numba. Rewrite more explicitly
@@ -122,7 +130,7 @@ def kword(
 
             n_comparisons += comparisons
 
-            iteration = loop_num * len(layer_offsets) + layer_num
+            iteration = loop_num * len(layer_offsets) + cnt
             err_over_time[iteration:] = err
             if display > 0 and (iteration % display) == 0:
                 # update data
@@ -289,6 +297,13 @@ def main():
         type=int,
         default=1,
         help="Display the mockup every X iterations (1 == most often) or 0 to not display (default 1)",
+    )
+    parser.add_argument(
+        "--shuffle",
+        "-sh",
+        type=bool,
+        default=True,
+        help="Shuffle the order of the layers each optimization loop (default True)",
     )
 
     args = parser.parse_args()
