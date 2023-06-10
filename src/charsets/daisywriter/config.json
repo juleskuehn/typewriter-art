@@ -1,0 +1,9 @@
+{
+    "charset_name": "Daisywriter (original)",
+    "image_path": "daisyglyphs-trimmed.png",
+    "slicesX": 59,
+    "slicesY": 7,
+    "excludeChars": [],
+    "whiteThreshold": 0.98,
+    "blankSpace": true
+}

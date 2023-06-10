@@ -1,0 +1,16 @@
+{
+    "charset_name": "Smith-Corona (medium weight)",
+    "image_path": "sc-1tone.png",
+    "slicesX": 26,
+    "slicesY": 15,
+    "includeChars": [
+        10,
+        34,
+        45,
+        68,
+        77,
+        88
+    ],
+    "whiteThreshold": 0.97,
+    "blankSpace": true
+}
