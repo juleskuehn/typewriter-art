@@ -188,9 +188,10 @@ def kword(
     # Save the final choices as a JSON file
     choices_dict = {}
     for layer_num, layer_offset in enumerate(fractional_layer_offsets):
-        choices_dict[f"layer{layer_num}_{layer_offset[0]}_{layer_offset[1]}"] = choices[
-            layer_num
-        ].tolist()
+        choices_dict[f"layer{layer_num}_{layer_offset[0]}_{layer_offset[1]}"] = [
+            row for row in choices[layer_num].reshape((num_rows, num_cols)).tolist()
+        ]
+    # Break the c
     with open(os.path.join(base_path, "results", "choices.json"), "w") as f:
         json.dump(choices_dict, f)
 
