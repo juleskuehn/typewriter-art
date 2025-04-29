@@ -19,6 +19,8 @@ largely limited by human error and the mechanics of the typewriter.
 
 ## Usage
 
+A VS Code devcontainer is provided. Clone the repo then open the folder as container. This will install all requirements.
+
 Requires Python **3.10**. It seems that Numba has some bugs with Python 3.11.
 
 ```
@@ -35,20 +37,20 @@ Final mockup, typeable layers and `choices.json` will be output to `src/results`
 ### Command line options
 ```
 > python optimize.py -h
-
-usage: optimize.py [-h] [--charset CHARSET] [--target TARGET] [--row_length ROW_LENGTH] [--num_loops NUM_LOOPS] [--init_mode INIT_MODE]
-                   [--asymmetry ASYMMETRY] [--search SEARCH] [--init_temp INIT_TEMP] [--layers LAYERS] [--display DISPLAY] [--shuffle SHUFFLE]
+usage: optimize.py [-h] [--charset CHARSET] [--target TARGET] [--row_length ROW_LENGTH] [--num_loops NUM_LOOPS]
+                   [--init_mode INIT_MODE] [--asymmetry ASYMMETRY] [--search SEARCH] [--init_temp INIT_TEMP]
+                   [--layers LAYERS] [--display DISPLAY] [--shuffle SHUFFLE] [--out_file OUT_FILE] [--nowait NOWAIT]
 
 options:
   -h, --help            show this help message and exit
   --charset CHARSET, -c CHARSET
                         Path to charset folder containing config.json and image (default sc-2)
   --target TARGET, -t TARGET
-                        Path to target image in ./images (default mwdog_crop.png)
+                        Relative path to target image (default images/mwdog_crop.png)
   --row_length ROW_LENGTH, -r ROW_LENGTH
                         Number of characters per row; determines image size (default 30)
   --num_loops NUM_LOOPS, -n NUM_LOOPS
-                        Number of times to optimize each layer (default 20)
+                        Number of times to optimize each layer (default 15)
   --init_mode INIT_MODE, -i INIT_MODE
                         Start with random or blank image (default random)
   --asymmetry ASYMMETRY, -a ASYMMETRY
@@ -58,11 +60,15 @@ options:
   --init_temp INIT_TEMP, -temp INIT_TEMP
                         Initial temperature for simulated annealing (default 0.001)
   --layers LAYERS, -l LAYERS
-                        Key to layers.json for offsets - how many layers, where to place them (default 16x1)
+                        Key to layers.json for offsets - how many layers, where to place them (default 4x2)
   --display DISPLAY, -d DISPLAY
                         Display the mockup every X iterations (1 == most often) or 0 to not display (default 1)
   --shuffle SHUFFLE, -sh SHUFFLE
                         Shuffle the order of the layers each optimization loop (default True)
+  --out_file OUT_FILE, -o OUT_FILE
+                        Path of the output file (default results/final.png)
+  --nowait NOWAIT, -nw NOWAIT
+                        Don't wait for keypress to close the display window (default True)
 ```
 
 ## Learn more

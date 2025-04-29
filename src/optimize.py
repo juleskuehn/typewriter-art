@@ -12,7 +12,7 @@ from utils import layer_optimization_pass, prep_charset, resizeTarget
 
 def kword(
     charset="hermes",
-    target="mwdog_crop.png",
+    target="images/mwdog_crop.png",
     layers="4x1",
     row_length=20,
     num_loops=5,
@@ -22,11 +22,15 @@ def kword(
     init_temp=0.001,
     display=True,
     shuffle=True,
-    out_file="final.png",
+    out_file="results/final.png",
     nowait=False,
 ):
     base_path = os.getcwd()
     chars, xChange, yChange = prep_charset(charset, base_path)
+
+    # Ensure the "results" subdirectory exists
+    results_dir = os.path.join(base_path, "results")
+    os.makedirs(results_dir, exist_ok=True)
 
     directory = False
     # Check if target is a directory
@@ -295,8 +299,8 @@ def main():
         "--target",
         "-t",
         type=str,
-        default="mwdog_crop.png",
-        help="Path to target image in ./images (default mwdog_crop.png)",
+        default="images/mwdog_crop.png",
+        help="Relative path to target image (default images/mwdog_crop.png)",
     )
     parser.add_argument(
         "--row_length",
@@ -310,7 +314,7 @@ def main():
         "-n",
         type=int,
         default=15,
-        help="Number of times to optimize each layer (default 20)",
+        help="Number of times to optimize each layer (default 15)",
     )
     parser.add_argument(
         "--init_mode",
@@ -344,8 +348,8 @@ def main():
         "--layers",
         "-l",
         type=str,
-        default="16x1",
-        help="Key to layers.json for offsets - how many layers, where to place them (default 16x1)",
+        default="4x2",
+        help="Key to layers.json for offsets - how many layers, where to place them (default 4x2)",
     )
     parser.add_argument(
         "--display",
@@ -365,15 +369,15 @@ def main():
         "--out_file",
         "-o",
         type=str,
-        default="final.png",
-        help="Name of the output file (default final.png)",
+        default="results/final.png",
+        help="Path of the output file (default results/final.png)",
     )
     parser.add_argument(
         "--nowait",
         "-nw",
         type=bool,
-        default=False,
-        help="Wait for keypress to close the display window (default False)",
+        default=True,
+        help="Don't wait for keypress to close the display window (default True)",
     )
 
     args = parser.parse_args()
