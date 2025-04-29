@@ -1,0 +1,14 @@
+{
+    "charset_name": "Daisywriter (shrunken)",
+    "image_path": "daisyglyphs-shrunken.png",
+    "slicesX": 59,
+    "slicesY": 7,
+    "excludeChars": [
+        16,
+        29,
+        31,
+        17
+    ],
+    "whiteThreshold": 0.98,
+    "blankSpace": true
+}

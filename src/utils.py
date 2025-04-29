@@ -119,15 +119,15 @@ def chop_charset(
     else:
         chars = [char for i, char in enumerate(chars) if i + 1 not in excludeChars]
 
-    d = os.path.join(basePath, "results", "chars")
-    filesToRemove = [os.path.join(d, f) for f in os.listdir(d)]
-    for f in filesToRemove:
-        os.remove(f)
-    for i, char in enumerate(chars):
-        try:
-            cv2.imwrite(os.path.join(d, f"{i}.png"), char * 255)
-        except:
-            continue
+    # d = os.path.join(basePath, "results", "chars")
+    # filesToRemove = [os.path.join(d, f) for f in os.listdir(d)]
+    # for f in filesToRemove:
+    #     os.remove(f)
+    # for i, char in enumerate(chars):
+    #     try:
+    #         cv2.imwrite(os.path.join(d, f"{i}.png"), char * 255)
+    #     except:
+    #         continue
 
     return np.array(chars, dtype="float32"), xChange, yChange
 
