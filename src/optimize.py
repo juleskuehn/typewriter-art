@@ -22,19 +22,49 @@ def kword(
     init_temp=0.001,
     display=True,
     shuffle=True,
+    out_file="final.png",
+    nowait=False,
 ):
     base_path = os.getcwd()
     chars, xChange, yChange = prep_charset(charset, base_path)
 
-    targetImg = cv2.imread(f"{base_path}/images/{target}", cv2.IMREAD_GRAYSCALE)
+    directory = False
+    # Check if target is a directory
+    if os.path.isdir(f"{base_path}/{target}"):
+        directory = True
+        # Find all images in target directory
+        target_pngs = [
+            f
+            for f in os.listdir(f"{base_path}/{target}")
+            if os.path.isfile(os.path.join(f"{base_path}/{target}", f))
+            and f.endswith(".png")
+        ]
+        assert len(target_pngs) > 0
+        target_pngs.sort()
+        target_imgs = []
+        for f in target_pngs:
+            targetImg = cv2.imread(f"{base_path}/{target}/{f}", cv2.IMREAD_GRAYSCALE)
+            charHeight, charWidth = chars[0].shape
+            newTarget, targetPadding = resizeTarget(
+                targetImg,
+                row_length,
+                (charHeight, charWidth),
+                (xChange, yChange),
+            )
+            target_imgs.append(newTarget)
+        # Stitch together target images vertically
+        newTarget = np.vstack(target_imgs)
 
-    charHeight, charWidth = chars[0].shape
-    newTarget, targetPadding = resizeTarget(
-        targetImg,
-        row_length,
-        (charHeight, charWidth),
-        (xChange, yChange),
-    )
+    else:
+        targetImg = cv2.imread(f"{base_path}/{target}", cv2.IMREAD_GRAYSCALE)
+
+        charHeight, charWidth = chars[0].shape
+        newTarget, targetPadding = resizeTarget(
+            targetImg,
+            row_length,
+            (charHeight, charWidth),
+            (xChange, yChange),
+        )
 
     num_rows = newTarget.shape[0] // charHeight
     num_cols = newTarget.shape[1] // charWidth
@@ -178,11 +208,37 @@ def kword(
                 cv2.waitKey(1)
 
     endTime = time.perf_counter_ns()
-    if display > 0:
+    if display > 0 and nowait is False:
         cv2.waitKey(0)
 
-    # Save the final images
-    cv2.imwrite(os.path.join(base_path, "results", "final.png"), mockup * 255)
+    # If the charset ends with "-sm", we're using a small charset
+    # and we should regenerate the mockup at full size using the same
+    # charset minus the "-sm" suffix
+    # TODO
+
+    if directory:
+        # Split the mockup back into the original images
+        # Recall we stacked together len(target_pngs) images into one mockup
+        num_images = len(target_pngs)
+        # Crop the mockup by the padding values
+        # max([o[0] for o in layer_offsets])),
+        # max([o[1] for o in layer_offsets]))
+        mockup = mockup[
+            : -max([o[0] for o in layer_offsets]),
+            : -max([o[1] for o in layer_offsets]),
+        ]
+        mockup = mockup.reshape(
+            (num_images, mockup.shape[0] // num_images, mockup.shape[1])
+        )
+        for i, target_png in enumerate(target_pngs):
+            cv2.imwrite(
+                os.path.join(base_path, out_file, target_png),
+                mockup[i] * 255,
+            )
+    else:
+        # Save the final images
+        cv2.imwrite(os.path.join(base_path, out_file), mockup * 255)
+
     # Change the layer offsets back to the original values (proportions of charW / charH)
     for layer_num, layer_offset in enumerate(fractional_layer_offsets):
         cv2.imwrite(
@@ -304,6 +360,20 @@ def main():
         type=bool,
         default=True,
         help="Shuffle the order of the layers each optimization loop (default True)",
+    )
+    parser.add_argument(
+        "--out_file",
+        "-o",
+        type=str,
+        default="final.png",
+        help="Name of the output file (default final.png)",
+    )
+    parser.add_argument(
+        "--nowait",
+        "-nw",
+        type=bool,
+        default=False,
+        help="Wait for keypress to close the display window (default False)",
     )
 
     args = parser.parse_args()
