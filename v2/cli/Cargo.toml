@@ -1,0 +1,18 @@
+[package]
+name = "typewriter-art-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "optimize"
+path = "src/main.rs"
+
+[dependencies]
+typewriter-art = { path = "../lib" }
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+base64.workspace = true
