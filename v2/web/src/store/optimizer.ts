@@ -44,13 +44,18 @@ function makeThumbnail(dataUrl: string): Promise<string> {
  * after a reload. IndexedDB is asynchronous with a far larger per-origin quota,
  * so full images and results are kept intact.
  *
- * Two things still matter even with a large quota:
+ * Three things still matter even with a large quota:
  *  1. zustand's persist middleware runs `setItem()` after **every** `set()`, and
  *     `optimize()` calls `set()` once per SSE progress event. Persistence is
  *     suspended during a run so progress ticks cost O(1) and the result is
  *     written exactly once, when the run finishes.
  *  2. Storage access never throws into application code — a full or unavailable
  *     store must not fail the optimization the user just waited for.
+ *  3. Writes must not race hydration. `setItem()` fires after every `set()`,
+ *     including `set()`s that land while the asynchronous read in `getItem` is
+ *     still in flight — persisting that pre-hydration state would overwrite
+ *     stored history with an empty list. Writes are gated on hydration
+ *     completion instead (see `storageReady`).
  */
 const STORAGE_KEY = "typewriter-art-history";
 
@@ -70,6 +75,26 @@ function estimateChars(value: string | undefined): number {
 
 /** True while an optimization run is in flight — see note above. */
 let persistSuspended = false;
+
+/**
+ * False until hydration has finished (success or failure).
+ *
+ * zustand's persist middleware runs `setItem()` after **every** `set()` —
+ * including `set()`s issued while the asynchronous read in `getItem` is still
+ * in flight. Writing then persists the pre-hydration default state (an empty
+ * history) over the real data: that is how history entries vanished after a
+ * reload. Writes are dropped until `onRehydrateStorage`'s callback below has
+ * fired, i.e. until the stored state has been merged into the store.
+ */
+let storageReady = false;
+
+/**
+ * Set false when stored history could not be *read* (as opposed to simply
+ * being absent). An empty history that follows a read error is untrustworthy,
+ * so writes stay off for the session rather than clobbering data that merely
+ * failed to load.
+ */
+let storageWritable = true;
 
 /** Last snapshot, reused while persistence is suspended. */
 let lastSnapshot: PersistedState | null = null;
@@ -113,61 +138,31 @@ function toPersisted(history: HistoryItem[]): PersistedState {
 }
 
 /**
- * Normalize whatever was found in storage into a `HistoryItem`.
+ * Validate whatever was found in storage into a `HistoryItem`.
  *
- * Handles the legacy localStorage shape (a `resultMeta` summary instead of a
- * full `result`, with no layers/choices) and self-heals entries where an older
- * build persisted the ~200px thumbnail in place of a source image it had
- * dropped — a "source" byte-identical to the thumbnail is a degraded fallback,
- * never a real upload.
+ * The schema is strict: anything that is not a current entry is dropped rather
+ * than repaired. There is no deployed data to be compatible with — the v2
+ * store in `lib/idb.ts` wipes the old database on upgrade — so legacy shapes
+ * (the localStorage `resultMeta` summaries, thumbnail-only "sources") are not
+ * supported.
+ *
+ * The one normalization kept is merging `config` over the defaults: a config
+ * must be structurally complete no matter which fields a stored entry carries,
+ * because a `checked={undefined}` input flips from uncontrolled to controlled
+ * on first click (React warning).
  */
 function normalizeItem(raw: unknown): HistoryItem | null {
-  const item = raw as
-    | (Partial<HistoryItem> & {
-        resultMeta?: {
-          stats: OptimizeResult["stats"];
-          mockup_base64: string;
-          num_rows: number;
-          num_cols: number;
-          error_over_time: number[];
-        };
-      })
-    | null
-    | undefined;
+  const item = raw as Partial<HistoryItem> | null | undefined;
   if (!item || typeof item.id !== "string") return null;
-
-  const thumbnail = typeof item.thumbnail === "string" ? item.thumbnail : "";
-  const imageDataUrl = typeof item.imageDataUrl === "string" ? item.imageDataUrl : undefined;
-  const degraded = !imageDataUrl || imageDataUrl === thumbnail;
-
-  let result: OptimizeResult | null = null;
-  if (item.result && typeof item.result === "object") {
-    result = item.result;
-  } else if (item.resultMeta) {
-    const m = item.resultMeta;
-    result = {
-      mockup_base64: m.mockup_base64 ?? "",
-      layers_base64: [],
-      num_rows: m.num_rows ?? 0,
-      num_cols: m.num_cols ?? 0,
-      fractional_offsets: [],
-      stats: m.stats ?? { total_time_ns: 0, total_comparisons: 0, final_error: 0 },
-      error_over_time: m.error_over_time ?? [],
-      choices: {},
-    };
-  }
+  if (typeof item.thumbnail !== "string" || typeof item.imageDataUrl !== "string") return null;
 
   return {
     id: item.id,
-    thumbnail,
-    // Display only — `sourceImageLost` blocks re-optimizing a fallback.
-    imageDataUrl: imageDataUrl ?? thumbnail,
-    sourceImageLost: degraded || item.sourceImageLost === true,
-    // Merge over the defaults: entries persisted by older builds lack fields
-    // added since (e.g. `align_deluxe`), and a `checked={undefined}` input
-    // flips from uncontrolled to controlled on first click (React warning).
+    thumbnail: item.thumbnail,
+    imageDataUrl: item.imageDataUrl,
+    sourceImageLost: item.sourceImageLost === true,
     config: { ...DEFAULT_CONFIG, ...(item.config ?? {}) },
-    result,
+    result: item.result && typeof item.result === "object" ? item.result : null,
     timestamp: typeof item.timestamp === "number" ? item.timestamp : 0,
   };
 }
@@ -180,8 +175,7 @@ function normalizeStored(input: unknown): PersistedState | null {
 }
 
 /**
- * `PersistStorage` over IndexedDB, with a one-time migration from the
- * localStorage key that older builds used.
+ * `PersistStorage` over IndexedDB.
  *
  * `getItem` always resolves rather than rejecting, so zustand's hydration
  * always completes and the UI can leave its loading state even when storage is
@@ -191,42 +185,32 @@ const persistStorage = {
   getItem: async (
     name: string
   ): Promise<{ state: PersistedState; version?: number } | null> => {
+    // One-time cleanup from the localStorage → IndexedDB transition: older
+    // builds kept history under this key in localStorage (the ~5 MB store that
+    // kept overflowing). Nothing reads it any more.
+    try {
+      if (typeof localStorage !== "undefined") localStorage.removeItem(name);
+    } catch {
+      // ignore
+    }
     try {
       const stored = normalizeStored(await idbGet<unknown>(name));
-      if (stored) return { state: stored };
+      return stored ? { state: stored } : null;
     } catch {
-      // No usable IndexedDB — fall through to the legacy key.
+      // A failed read is not an empty store: keep writes disabled so the
+      // empty history that follows can never overwrite unread data.
+      storageWritable = false;
+      return null;
     }
-
-    // Migrate the localStorage payload older builds wrote, then delete it:
-    // that key is the one that kept overflowing its ~5 MB quota.
-    try {
-      if (typeof localStorage !== "undefined") {
-        const raw = localStorage.getItem(name);
-        if (raw) {
-          const stored = normalizeStored(JSON.parse(raw));
-          if (stored) {
-            try {
-              await idbSet(name, { state: stored });
-              localStorage.removeItem(name);
-            } catch {
-              // Migration is best-effort; the data still loads for this session.
-            }
-            return { state: stored };
-          }
-        }
-      }
-    } catch {
-      // Ignore malformed legacy data.
-    }
-
-    return null;
   },
   setItem: async (
     name: string,
     value: { state: PersistedState; version?: number }
   ): Promise<void> => {
-    if (persistSuspended) return;
+    // The single choke point for writes — see the notes on `storageReady` and
+    // `persistSuspended` above: zustand persists after *every* `set()`, so this
+    // is what keeps pre-hydration state and progress ticks out of storage.
+    if (!storageReady || !storageWritable || persistSuspended) return;
     try {
       await idbSet(name, value);
     } catch {
@@ -237,11 +221,6 @@ const persistStorage = {
   removeItem: async (name: string): Promise<void> => {
     try {
       await idbRemove(name);
-    } catch {
-      // ignore
-    }
-    try {
-      if (typeof localStorage !== "undefined") localStorage.removeItem(name);
     } catch {
       // ignore
     }
@@ -456,13 +435,22 @@ export const useOptimizerStore = create<OptimizerStore>()(
         lastSnapshot = toPersisted(state.history);
         return lastSnapshot;
       },
-      // `getItem` has already normalized whatever was in storage, including
-      // migrating the legacy localStorage shape and self-healing entries whose
-      // "source" is just the thumbnail.
+      // `getItem` has already validated whatever was in storage.
       merge: (persisted: unknown, current) => {
         const p = persisted as PersistedState | undefined;
-        if (!p?.history) return current as OptimizerStore;
-        return { ...(current as OptimizerStore), history: p.history };
+        const c = current as OptimizerStore;
+        if (!p?.history) return c;
+        // Hydration ends with a replace-style `set`, so anything added to
+        // `history` while the async read was in flight would be dropped here.
+        // Keep those entries (history is newest-first).
+        const pending = c.history.filter((h) => !p.history.some((x) => x.id === h.id));
+        return { ...c, history: [...pending, ...p.history] };
+      },
+      // Fires after the merge above on both the success and error paths — only
+      // from here on may `setItem` touch storage.
+      onRehydrateStorage: () => (_state, error) => {
+        storageReady = true;
+        if (error) storageWritable = false;
       },
     }
   )

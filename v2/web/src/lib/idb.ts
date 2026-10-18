@@ -15,6 +15,13 @@
 const DB_NAME = "typewriter-art";
 const STORE_NAME = "kv";
 
+/**
+ * Version 2 wipes the store on upgrade. This app is not deployed anywhere and
+ * no legacy shapes are supported any more (localStorage-era `resultMeta`
+ * entries, thumbnail-only sources), so a clean slate replaces migration code.
+ */
+const DB_VERSION = 2;
+
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
@@ -24,11 +31,12 @@ function openDb(): Promise<IDBDatabase> {
         reject(new Error("IndexedDB is unavailable"));
         return;
       }
-      const request = indexedDB.open(DB_NAME, 1);
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
-        if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-          request.result.createObjectStore(STORE_NAME);
+        if (request.result.objectStoreNames.contains(STORE_NAME)) {
+          request.result.deleteObjectStore(STORE_NAME);
         }
+        request.result.createObjectStore(STORE_NAME);
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("IndexedDB open failed"));

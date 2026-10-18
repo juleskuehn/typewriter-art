@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useOptimizerStore } from "@/store/optimizer";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -10,8 +10,8 @@ export function SidebarHistory() {
   const activeId = useOptimizerStore((s) => s.activeId);
   const selectImage = useOptimizerStore((s) => s.selectImage);
   const addImage = useOptimizerStore((s) => s.addImage);
+  const newImage = useOptimizerStore((s) => s.newImage);
   const removeImage = useOptimizerStore((s) => s.removeImage);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback(
     (file: File) => {
@@ -58,30 +58,19 @@ export function SidebarHistory() {
       className="w-20 flex flex-col items-center gap-1 py-3 border-r border-gray-200 bg-gray-100/50 overflow-y-auto"
       onPaste={handlePaste}
     >
-      {/* Add button */}
+      {/* Add button: always returns to the blank drop-zone page, from which
+          an image can be dropped, pasted, or chosen with "Choose file". */}
       <Tooltip>
         <TooltipTrigger
           className="w-14 h-14 rounded-xl border-2 border-dashed border-gray-300
             hover:border-gray-400 hover:bg-gray-200/50 text-gray-400
             inline-flex items-center justify-center shrink-0 cursor-pointer"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={newImage}
         >
           <Plus className="w-6 h-6" />
         </TooltipTrigger>
-        <TooltipContent side="right">Add image (or paste)</TooltipContent>
+        <TooltipContent side="right">New image (drop or paste)</TooltipContent>
       </Tooltip>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFile(file);
-          e.target.value = "";
-        }}
-      />
 
       {/* History items */}
       {history.map((item) => (
