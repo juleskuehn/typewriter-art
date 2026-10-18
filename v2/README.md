@@ -169,16 +169,24 @@ objective never sees. Light gradients quantize to whole glyphs and flatten.
 Dither) adds a finishing stage on top of the optimization loops:
 
 1. **Seeding** — in the light band (`--dither-band`, default: target ink
-   density ≤ 0.15), each blank cell's residual ink demand is thresholded
-   against the chosen screen — or error-diffused for `fs` — to scatter the
-   lightest glyph (`--dither-mark`, default `auto`).
+   density ≤ 0.15), the ink demand of each area is spread over the composite
+   lattice (all layers' cell grids at their offsets) and thresholded against
+   the chosen screen — or error-diffused for `fs` — to scatter the lightest
+   glyph (`--dither-mark`, default `auto`). The screen is sampled at lattice
+   coordinates, so every layer contributes to one coherent pattern, and
+   overstrike copies share the demand instead of each claiming it.
 2. **Flip refinement** — greedy passes (`--dither-refine`, default 2) flip
    band cells between blank and the mark whenever that lowers the *blurred*
-   error (~1.5 char cells). This settles the local density to the target tone
-   and arbitrates overlaps between layers; flips are allowed on any band cell,
-   because the optimizer quantizes light tones to whole glyphs and only this
-   stage can move ink between cells. Detail is protected by the band itself:
-   cells whose target tile carries more ink stay out of it.
+   error (~1.5 char cells), settling the local density to the target tone.
+   Optimized content may only be reshaped where the target tile is flat —
+   structured light areas (highlights, textures) keep their detail.
+
+Scattered marks keep a minimum distance derived from the mark glyph's own
+footprint — the lattice is finer than the mark (a period is ~5 px on a
+2.5 px quarter-char lattice), and unconstrained dots fuse into worms. The
+spacing rule keeps them isolated stipple. For texture: `bayer4`/`bayer8` are
+regular (easiest to follow when typing the result by hand), `bluenoise` and
+`fs` look organic.
 
 Dark areas are untouched by design — overlap is their tone control, and the
 ink floor keeps it honest. Measured on a light ramp (0.03 → 0.13 ink): the
@@ -189,9 +197,7 @@ low-frequency error halved for a ~4 % pointwise trade in the light band.
 
 Deliberate deviation: the paper's answer to light tones is strike-force
 variation; the scans already carry two weights, and dithering adds spatial
-tone where even the lightest weight is too heavy. Ordered screens (bayer) are
-the easiest to follow when typing the result by hand; blue noise and
-Floyd–Steinberg look more organic.
+tone where even the lightest weight is too heavy.
 
 ## Center Focus
 
