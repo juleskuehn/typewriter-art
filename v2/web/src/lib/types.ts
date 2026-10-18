@@ -13,6 +13,8 @@ export interface OptimizeConfig {
   shuffle: boolean;
   /** Run the pre-optimization auto-alignment sweep (64-crop search). */
   align_enabled: boolean;
+  /** Deluxe: deep-rerank the top crops with a real optimization run. */
+  align_deluxe: boolean;
   /** Spatial weighting of the loss and alignment score ("center focus"). */
   center_focus: "off" | "soft" | "strong";
 }
@@ -48,8 +50,13 @@ export interface AlignmentScore {
 export interface AlignmentResult {
   best: CropTransform;
   steps: number;
-  /** All candidates, sorted best-first. */
+  /** Screen/refine candidates, sorted best-first by the quick score. */
   scores: AlignmentScore[];
+  /**
+   * Deluxe rerank scores: the top candidates re-evaluated with a deeper run.
+   * Not comparable with `scores`; `best` follows this ranking when present.
+   */
+  rerank?: AlignmentScore[];
 }
 
 /** Full result from the optimizer. */
@@ -108,6 +115,7 @@ export const DEFAULT_CONFIG: OptimizeConfig = {
   layers: "4x2",
   shuffle: true,
   align_enabled: true,
+  align_deluxe: false,
   center_focus: "soft",
 };
 

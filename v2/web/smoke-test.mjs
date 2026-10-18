@@ -30,6 +30,7 @@ const config = {
   layers: "1x2",
   shuffle: true,
   align_enabled: true,
+  align_deluxe: true,
   center_focus: "soft",
 };
 
@@ -54,7 +55,10 @@ console.log("stats:", JSON.stringify(result.stats));
 console.log(
   "alignment:",
   result.alignment
-    ? `best ${JSON.stringify(result.alignment.best)} of ${result.alignment.scores.length}`
+    ? `best ${JSON.stringify(result.alignment.best)} of ${result.alignment.scores.length}` +
+        (result.alignment.rerank
+          ? `, reranked ${result.alignment.rerank.length}`
+          : "")
     : "none"
 );
 

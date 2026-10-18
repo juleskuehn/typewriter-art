@@ -6,22 +6,34 @@
 //! Characters can only be placed on a fixed character grid, so how the target
 //! image happens to line up with that grid strongly affects shape matching —
 //! this is "the primary factor when the typed image is small". Before the
-//! iterative optimization starts, we therefore try every combination of small
-//! zoom and shift values (`steps³` candidates; 64 at the default `steps = 4`),
-//! run a single quick greedy optimization cycle for each cropped target, and
-//! keep the crop that maximizes `ssim * ssim_weight + psnr`
+//! iterative optimization starts, we therefore try a range of small zoom and
+//! shift values, run a quick greedy optimization cycle for each cropped target,
+//! and keep the crop that maximizes `ssim * ssim_weight + psnr`
 //! (the paper's `SSIM × 4 + PSNR`).
 //!
 //! The crop is a scale + translate of the *grid-aligned* target within the
-//! same fixed-size container (white fill), exactly as in v1:
-//! - zoom: the container grows by `zoom/steps` of a character in each
-//!   dimension — the paper's scale `s = (c + n) / n`.
-//! - shift: content moves left/up by `shift/steps` of a character
-//!   (the paper's `x = -a * charWidth`, `y = -b * charHeight`).
+//! same fixed-size container (white fill):
+//! - zoom: the container grows (or shrinks, when negative) by `zoom/steps` of
+//!   a character in each dimension — the paper's scale `s = (c + n) / n`.
+//! - shift: content moves by `(shift_x, shift_y)/steps` of a character
+//!   (positive = left/up, the paper's `x = -a * charWidth`; negative moves it
+//!   right/down, with white fill on the other side).
+//!
+//! The search space is signed `translate + scale` in character fractions, and
+//! candidates are evaluated in an approximate-index style cascade:
+//! 1. **Screen** a coarse grid (¼-char translation phases × signed ¾-char
+//!    scale) with a single placement pass — v1 parity.
+//! 2. **Refine** the neighborhoods of the top few seeds at ⅛-char fine steps
+//!    (±1 step in every parameter), still screened cheaply.
+//! 3. **Rescore** the top [`AlignConfig::refine_top`] with the full layer stack
+//!    (one cycle) and rank by that.
+//! 4. Optional **deluxe rerank** ([`AlignConfig::rerank_top`]): deeper
+//!    optimization of the top few, winner picked by that — see
+//!    [`crate::optimize`], which continues the winner instead of restarting.
 //!
 //! Deliberate deviations from the v1 code:
-//! - Shift steps follow the paper (¼ char per step at `steps = 4`); the v1
-//!   code shifted by ⅛ char per step, contradicting the paper's parameter list.
+//! - The parameter space is signed and searched coarse-to-fine; v1's was
+//!   one-sided (shifts only left/up, zoom only growing) at fixed ¼-char steps.
 //! - The score weights SSIM by 4 (paper); the v1 code scored `ssim + psnr`.
 //! - The quick pass is an exact greedy pass over the whole charset; v1 used an
 //!   ANN-assisted single placement visit per position.
@@ -57,14 +69,22 @@ use crate::types::{
 /// Called after each candidate finishes (from parallel worker threads).
 pub type AlignProgressFn<'a> = dyn Fn(usize, usize) + Sync + 'a;
 
-/// All candidate crop transforms: every combination of
-/// `(zoom, shift_y, shift_x)` with each parameter in `0..steps`.
-pub fn candidate_transforms(steps: u32) -> Vec<CropTransform> {
-    let steps = steps.max(1);
-    let mut out = Vec::with_capacity((steps * steps * steps) as usize);
-    for zoom in 0..steps {
-        for shift_y in 0..steps {
-            for shift_x in 0..steps {
+/// Number of coarse candidates whose neighborhoods are refined at fine steps.
+pub(crate) const FINE_SEEDS: usize = 3;
+
+/// Coarse candidate grid: shifts at quarter-character phases `{0, ¼, ½, ¾}`
+/// char (the paper's `a, b ∈ {0, 0.25, 0.5, 0.75}`) crossed with signed scale
+/// `{-¾, 0, +¾}` char (v1 could only grow). Parameter values are in fine
+/// steps: `v` = `v/steps` of a character.
+pub fn coarse_candidates(steps: u32) -> Vec<CropTransform> {
+    let steps = steps.max(4) as i32;
+    let q = (steps / 4).max(1); // quarter char in fine steps
+    let phases = [0, q, 2 * q, 3 * q];
+    let zooms = [-3 * q, 0, 3 * q];
+    let mut out = Vec::with_capacity(zooms.len() * phases.len() * phases.len());
+    for &zoom in &zooms {
+        for &shift_y in &phases {
+            for &shift_x in &phases {
                 out.push(CropTransform {
                     zoom,
                     shift_x,
@@ -76,11 +96,42 @@ pub fn candidate_transforms(steps: u32) -> Vec<CropTransform> {
     out
 }
 
+/// Fine candidates around each seed: every combination of ±1 fine step in
+/// `(zoom, shift_x, shift_y)`, deduplicated across seeds and excluding the
+/// seeds themselves (already scored).
+pub fn fine_candidates(seeds: &[CropTransform]) -> Vec<CropTransform> {
+    let mut seen: std::collections::HashSet<(i32, i32, i32)> = seeds
+        .iter()
+        .map(|t| (t.zoom, t.shift_x, t.shift_y))
+        .collect();
+    let mut out = Vec::new();
+    for s in seeds {
+        for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let t = CropTransform {
+                        zoom: s.zoom + dz,
+                        shift_x: s.shift_x + dx,
+                        shift_y: s.shift_y + dy,
+                    };
+                    if seen.insert((t.zoom, t.shift_x, t.shift_y)) {
+                        out.push(t);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Apply one crop transform to a grid-aligned target.
 ///
-/// The target is scaled up by `zoom/steps` of a character in each dimension,
-/// shifted left/up by `(shift_x, shift_y)/steps` of a character, then cropped
-/// or white-padded back to the original container size.
+/// The target is scaled by `zoom/steps` of a character in each dimension
+/// (negative shrinks), translated by `(shift_x, shift_y)/steps` of a character
+/// (positive = left/up), then cropped or white-padded back to the original
+/// container size (v1 parity: the whole container including the padding
+/// border is transformed; white fill enters from the side content moved away
+/// from).
 ///
 /// Returns the transformed target and the score region `(y0, y1, x0, x1)`:
 /// where the image `content` lands after the zoom + shift, clipped to the
@@ -98,38 +149,45 @@ pub fn apply_crop(
     steps: u32,
 ) -> (Image, (usize, usize, usize, usize)) {
     let (char_h, char_w) = char_shape;
-    let steps = steps.max(1) as usize;
+    let steps = i64::from(steps.max(1));
     let (h0, w0) = target.dim();
 
-    // Zoom: grow the container by zoom/steps of a character per dimension
+    // Zoom: signed boundary growth of zoom/steps of a character per dimension
     let (h1, w1) = (
-        h0 + (t.zoom as usize * char_h) / steps,
-        w0 + (t.zoom as usize * char_w) / steps,
+        (h0 as i64 + (i64::from(t.zoom) * char_h as i64) / steps).max(1) as usize,
+        (w0 as i64 + (i64::from(t.zoom) * char_w as i64) / steps).max(1) as usize,
     );
     let scaled = crate::resize::resize_area_f32(target, w1, h1);
 
-    // Shift: cut from the top-left, moving content left/up
-    let shift_y = (t.shift_y as usize * char_h) / steps;
-    let shift_x = (t.shift_x as usize * char_w) / steps;
-    let (sh, sw) = (h1.saturating_sub(shift_y), w1.saturating_sub(shift_x));
+    // Shift: signed translation; positive moves content left/up (v1),
+    // negative right/down
+    let shift_y = (i64::from(t.shift_y) * char_h as i64) / steps;
+    let shift_x = (i64::from(t.shift_x) * char_w as i64) / steps;
 
-    // Crop-or-pad back into the original container (white fill), v1 parity:
-    // the whole container including the padding border is transformed.
-    let (clip_h, clip_w) = (h0.min(sh), w0.min(sw));
+    // Place the scaled image at (-shift_y, -shift_x) in the container,
+    // cropping or white-padding (v1 parity: the padding border transforms too)
+    let clip = |off: i64, span: usize, max: usize| {
+        let start = off.max(0);
+        let end = (off + span as i64).min(max as i64).max(0);
+        (start as usize, end.max(start) as usize)
+    };
+    let (y0c, y1c) = clip(-shift_y, h1, h0);
+    let (x0c, x1c) = clip(-shift_x, w1, w0);
     let mut out = Image::from_elem((h0, w0), 1.0);
-    out.slice_mut(s![..clip_h, ..clip_w])
-        .assign(&scaled.slice(s![shift_y..(shift_y + clip_h), shift_x..(shift_x + clip_w)]));
+    if y1c > y0c && x1c > x0c {
+        let (sy0, sx0) = ((y0c as i64 + shift_y) as usize, (x0c as i64 + shift_x) as usize);
+        out.slice_mut(s![y0c..y1c, x0c..x1c])
+            .assign(&scaled.slice(s![sy0..(sy0 + (y1c - y0c)), sx0..(sx0 + (x1c - x0c))]));
+    }
 
     // Where the image content lands after zoom + shift, clipped to the
     // container. Scaling maps source row y to dest row y * (h1/h0).
     let (cy0, cy1, cx0, cx1) = content;
     let (sy, sx) = (h1 as f64 / h0 as f64, w1 as f64 / w0 as f64);
-    let map = |start: usize, end: usize, s: f64, shift: usize, max: usize| {
-        let lo = ((start as f64 * s).round() as isize - shift as isize).max(0) as usize;
-        let lo = lo.min(max);
-        let hi = ((end as f64 * s).round() as isize - shift as isize).max(0) as usize;
-        let hi = hi.min(max).max(lo);
-        (lo, hi)
+    let map = |start: usize, end: usize, s: f64, shift: i64, max: usize| {
+        let lo = ((start as f64 * s).round() as i64 - shift).clamp(0, max as i64) as usize;
+        let hi = ((end as f64 * s).round() as i64 - shift).clamp(0, max as i64) as usize;
+        (lo, hi.max(lo))
     };
     let (y0, y1) = map(cy0, cy1, sy, shift_y, h0);
     let (x0, x1) = map(cx0, cx1, sx, shift_x, w0);
@@ -137,12 +195,47 @@ pub fn apply_crop(
     // Degenerate content mapping (pathological inputs): fall back to the
     // overlap of the shifted content with the container (v1's minShape).
     let score = if y1 <= y0 || x1 <= x0 {
-        (0, clip_h, 0, clip_w)
+        (0, y1c, 0, x1c)
     } else {
         (y0, y1, x0, x1)
     };
 
     (out, score)
+}
+
+/// Score a mockup against its target over `rect` = `(y0, y1, x0, x1)`:
+/// returns `(score, psnr, ssim)` with `score = ssim * ssim_weight + psnr`,
+/// weighted by the center-focus profile over the rect when enabled.
+pub fn score_mockup(
+    target: &Image,
+    mockup: &Image,
+    rect: (usize, usize, usize, usize),
+    focus: CenterFocus,
+    ssim_weight: f32,
+) -> (f32, f32, f32) {
+    let (y0, y1, x0, x1) = rect;
+    if y1.saturating_sub(y0) < 3 || x1.saturating_sub(x0) < 3 {
+        // Too little content left visible to score (and below SSIM's 3x3
+        // window): rank such crops last. (Finite sentinel — JSON-safe.)
+        return (-1.0e9, 0.0, 0.0);
+    }
+    let mockup_scored = mockup.slice(s![y0..y1, x0..x1]).to_owned();
+    let target_scored = target.slice(s![y0..y1, x0..x1]).to_owned();
+
+    // Score the content only, with the same "center focus" weighting the
+    // optimization uses (None = uniform).
+    let score_weights = crate::weights::focus_map((y1 - y0, x1 - x0), focus);
+    let (psnr, ssim) = match score_weights {
+        Some(ref w) => (
+            metrics::psnr_weighted(&target_scored, &mockup_scored, w, 1.0),
+            metrics::ssim_weighted(&target_scored, &mockup_scored, w, 1.0),
+        ),
+        None => (
+            metrics::psnr(&target_scored, &mockup_scored, 1.0),
+            metrics::ssim(&target_scored, &mockup_scored, 1.0),
+        ),
+    };
+    (ssim * ssim_weight + psnr, psnr, ssim)
 }
 
 /// Run the quick greedy evaluation for one candidate target.
@@ -197,6 +290,7 @@ pub fn quick_mockup(
                 SearchAlgorithm::Greedy,
                 0.0,
                 weights.as_ref(),
+                0, // greedy pass: RNG unused
             );
             choices
                 .index_axis_mut(ndarray::Axis(0), layer_num)
@@ -245,32 +339,27 @@ fn evaluate_candidate(
         (y0, y1, x0, x1),
     );
 
-    let mockup_scored = mockup.slice(s![y0..y1, x0..x1]).to_owned();
-    let target_scored = candidate_target.slice(s![y0..y1, x0..x1]).to_owned();
-
-    // Score the content only, with the same "center focus" weighting the
-    // optimization uses (None = uniform).
-    let score_weights = crate::weights::focus_map((y1 - y0, x1 - x0), focus);
-    let (psnr, ssim) = match score_weights {
-        Some(ref w) => (
-            metrics::psnr_weighted(&target_scored, &mockup_scored, w, 1.0),
-            metrics::ssim_weighted(&target_scored, &mockup_scored, w, 1.0),
-        ),
-        None => (
-            metrics::psnr(&target_scored, &mockup_scored, 1.0),
-            metrics::ssim(&target_scored, &mockup_scored, 1.0),
-        ),
-    };
+    let (score, psnr, ssim) = score_mockup(
+        &candidate_target,
+        &mockup,
+        (y0, y1, x0, x1),
+        focus,
+        config.ssim_weight,
+    );
 
     (
         AlignmentScore {
             transform: *t,
             psnr,
             ssim,
-            score: ssim * config.ssim_weight + psnr,
+            score,
             refined: false,
         },
-        if keep_mockup { Some(mockup_scored) } else { None },
+        if keep_mockup {
+            Some(mockup.slice(s![y0..y1, x0..x1]).to_owned())
+        } else {
+            None
+        },
     )
 }
 
@@ -299,55 +388,76 @@ pub fn search(
     keep_mockups: bool,
     progress: Option<&AlignProgressFn<'_>>,
 ) -> AlignmentSearch {
-    let steps = config.steps.max(1);
-    let candidates = candidate_transforms(steps);
-    let n = candidates.len();
+    let steps = config.steps.max(4);
+    let coarse = coarse_candidates(steps);
 
     let refine_top = if layer_offsets.len() > 1 {
-        (config.refine_top as usize).min(n)
+        (config.refine_top as usize).min(coarse.len() + FINE_SEEDS * 27)
     } else {
         0
     };
     let done = std::sync::atomic::AtomicUsize::new(0);
+    // Progress total: coarse grid + upper bound on fine candidates + refines
+    let total_est = coarse.len() + FINE_SEEDS * 27 + refine_top;
     let advance = || {
         let completed = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         if let Some(progress) = progress {
-            progress(completed, n + refine_top);
+            progress(completed, total_est);
         }
     };
 
     // Waves of at most one candidate per thread: full parallelism, bounded memory.
     let wave_size = rayon::current_num_threads().max(1);
-    let mut scored: Vec<(AlignmentScore, Option<Image>)> = Vec::with_capacity(n);
-
-    // Stage 1: screen every candidate with a single placement pass.
     let screen_offsets = &layer_offsets[..1.min(layer_offsets.len())];
-    for wave in candidates.chunks(wave_size) {
-        let results: Vec<_> = wave
-            .par_iter()
-            .map(|t| {
-                let out = evaluate_candidate(
-                    target,
-                    chars,
-                    screen_offsets,
-                    config,
-                    asymmetry,
-                    content,
-                    focus,
-                    t,
-                    keep_mockups,
-                );
-                advance();
-                out
-            })
-            .collect();
-        scored.extend(results);
-    }
+    let screen_all = |candidates: &[CropTransform]| {
+        let mut out = Vec::with_capacity(candidates.len());
+        for wave in candidates.chunks(wave_size) {
+            let results: Vec<_> = wave
+                .par_iter()
+                .map(|t| {
+                    let r = evaluate_candidate(
+                        target,
+                        chars,
+                        screen_offsets,
+                        config,
+                        asymmetry,
+                        content,
+                        focus,
+                        t,
+                        keep_mockups,
+                    );
+                    advance();
+                    r
+                })
+                .collect();
+            out.extend(results);
+        }
+        out
+    };
+
+    // Stage 1a: screen the coarse grid with a single placement pass.
+    let mut scored: Vec<(AlignmentScore, Option<Image>)> = screen_all(&coarse);
     scored.sort_by(|a, b| {
         b.0.score
             .partial_cmp(&a.0.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    // Stage 1b: screen fine neighborhoods around the top coarse seeds.
+    let seeds: Vec<CropTransform> = scored
+        .iter()
+        .take(FINE_SEEDS)
+        .map(|(s, _)| s.transform)
+        .collect();
+    let fine = fine_candidates(&seeds);
+    if !fine.is_empty() {
+        scored.extend(screen_all(&fine));
+        scored.sort_by(|a, b| {
+            b.0.score
+                .partial_cmp(&a.0.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
 
     // Stage 2: rescore the top candidates with the full layer stack.
     if refine_top > 0 {
@@ -391,7 +501,7 @@ pub fn search(
         });
     }
 
-    let mut scores = Vec::with_capacity(n);
+    let mut scores = Vec::with_capacity(scored.len());
     let mut mockups = Vec::new();
     for (score, mockup) in scored {
         if let Some(m) = mockup {
@@ -409,6 +519,7 @@ pub fn search(
             }),
             steps,
             scores,
+            rerank: None,
         },
         mockups,
     }
@@ -429,9 +540,31 @@ mod tests {
     }
 
     #[test]
-    fn test_candidate_transforms_count() {
-        assert_eq!(candidate_transforms(4).len(), 64);
-        assert_eq!(candidate_transforms(1).len(), 1);
+    fn test_coarse_candidates_grid() {
+        // 3 signed zooms × 4 shift phases × 4 shift phases = 48
+        assert_eq!(coarse_candidates(8).len(), 48);
+        assert_eq!(coarse_candidates(4).len(), 48);
+        // Quarter-char phases (fine steps of 1/8 char): 0, 2, 4, 6
+        let c = coarse_candidates(8);
+        assert!(c.contains(&CropTransform { zoom: -6, shift_x: 2, shift_y: 4 }));
+        assert!(c.contains(&CropTransform { zoom: 6, shift_x: 6, shift_y: 0 }));
+    }
+
+    #[test]
+    fn test_fine_candidates_neighborhood() {
+        let seeds = vec![
+            CropTransform { zoom: 0, shift_x: 0, shift_y: 0 },
+            CropTransform { zoom: 0, shift_x: 1, shift_y: 0 },
+        ];
+        let fine = fine_candidates(&seeds);
+        // ±1 fine step in every parameter around each seed, minus the seeds
+        // (already scored) and shared cells
+        assert!(fine.len() >= 27 && fine.len() < 54);
+        assert!(!fine.contains(&seeds[0]));
+        assert!(fine.contains(&CropTransform { zoom: -1, shift_x: -1, shift_y: 1 }));
+        let unique: std::collections::HashSet<_> =
+            fine.iter().map(|t| (t.zoom, t.shift_x, t.shift_y)).collect();
+        assert_eq!(unique.len(), fine.len(), "no duplicates");
     }
 
     #[test]
@@ -496,21 +629,52 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_crop_negative_shift_moves_right_down() {
+        let target = Image::from_shape_fn((8, 8), |(_, x)| if x < 4 { 0.0 } else { 1.0 });
+        let t = CropTransform { zoom: 0, shift_x: -1, shift_y: 0 };
+        let (out, score) = apply_crop(&target, &t, (4, 4), (0, 8, 0, 8), 4);
+        // Content moves right by 1 px (1/4 char): black now at columns 1..5,
+        // white fill enters from the left
+        assert_eq!(out[[0, 0]], 1.0);
+        assert_eq!(out[[0, 1]], 0.0);
+        assert_eq!(out[[0, 4]], 0.0);
+        assert_eq!(out[[0, 5]], 1.0);
+        // Score rect excludes the white fill column
+        assert_eq!(score, (0, 8, 1, 8));
+    }
+
+    #[test]
+    fn test_apply_crop_negative_zoom_shrinks() {
+        let target = Image::from_elem((12, 16), 0.5);
+        let t = CropTransform { zoom: -4, shift_x: 0, shift_y: 0 };
+        let (out, score) = apply_crop(&target, &t, (4, 4), (2, 10, 3, 13), 4);
+        assert_eq!(out.dim(), (12, 16), "container size is preserved");
+        // Rows scale by 8/12 → content (2, 10) maps to (1.33, 6.67) ≈ (1, 7);
+        // cols scale by 12/16 → (3, 13) maps to (2.25, 9.75) ≈ (2, 10)
+        assert_eq!(score, (1, 7, 2, 10));
+        // White fill enters at the bottom/right of the shrunk content
+        assert_eq!(out[[11, 15]], 1.0);
+    }
+
+    #[test]
     fn test_search_returns_sorted_scores() {
         let chars = test_chars();
         let target = Image::from_elem((8, 8), 0.6);
         let config = AlignConfig {
             enabled: true,
-            steps: 2,
+            steps: 4,
             passes: 1,
             ssim_weight: 4.0,
             refine_top: 3,
+            rerank_top: 0,
+            rerank_loops: 0,
         };
         let completed = std::sync::atomic::AtomicUsize::new(0);
         let progress = |c: usize, _t: usize| {
             completed.store(c, std::sync::atomic::Ordering::SeqCst);
         };
-        // Two layers → two-stage sweep: 8 screen evals + 3 refined evals
+        // Two layers → coarse + fine screen (single placement pass), then the
+        // top 3 rescored with the full layer stack
         let result = search(
             &target,
             &chars,
@@ -523,14 +687,18 @@ mod tests {
             Some(&progress),
         );
 
-        assert_eq!(result.result.steps, 2);
-        assert_eq!(result.result.scores.len(), 8);
-        assert_eq!(result.mockups.len(), 8);
-        assert_eq!(completed.load(std::sync::atomic::Ordering::SeqCst), 11);
+        assert_eq!(result.result.steps, 4);
+        assert!(result.result.scores.len() >= 48, "coarse grid is screened");
+        assert_eq!(result.mockups.len(), result.result.scores.len());
+        assert_eq!(
+            completed.load(std::sync::atomic::Ordering::SeqCst),
+            result.result.scores.len() + 3,
+            "one eval per screened candidate + 3 refinements"
+        );
         assert_eq!(result.result.best, result.result.scores[0].transform);
-        // Top 3 were rescored with the full layer stack
-        assert!(result.result.scores[..3].iter().all(|s| s.refined));
-        assert!(result.result.scores[3..].iter().all(|s| !s.refined));
+        assert!(result.result.rerank.is_none());
+        // Exactly 3 candidates were rescored with the full layer stack
+        assert_eq!(result.result.scores.iter().filter(|s| s.refined).count(), 3);
         for pair in result.result.scores.windows(2) {
             assert!(pair[0].score >= pair[1].score);
         }
@@ -542,10 +710,12 @@ mod tests {
         let target = Image::from_elem((8, 8), 0.6);
         let config = AlignConfig {
             enabled: true,
-            steps: 2,
+            steps: 4,
             passes: 1,
             ssim_weight: 4.0,
             refine_top: 3,
+            rerank_top: 0,
+            rerank_loops: 0,
         };
         // One layer → screening is already the full evaluation
         let result = search(
@@ -559,7 +729,7 @@ mod tests {
             false,
             None,
         );
-        assert_eq!(result.result.scores.len(), 8);
+        assert!(result.result.scores.len() >= 48);
         assert!(result.result.scores.iter().all(|s| !s.refined));
     }
 
@@ -570,10 +740,12 @@ mod tests {
         let target = Image::from_elem((8, 8), 0.6);
         let config = AlignConfig {
             enabled: true,
-            steps: 2,
+            steps: 4,
             passes: 1,
             ssim_weight: 4.0,
             refine_top: 0,
+            rerank_top: 0,
+            rerank_loops: 0,
         };
         let result = search(
             &target,
@@ -586,7 +758,7 @@ mod tests {
             false,
             None,
         );
-        assert_eq!(result.result.scores.len(), 8);
+        assert!(result.result.scores.len() >= 48);
         assert!(result.result.scores.iter().all(|s| s.score.is_finite()));
     }
 

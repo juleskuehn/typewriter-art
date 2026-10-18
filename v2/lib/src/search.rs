@@ -6,6 +6,7 @@
 //! evaluated in random order (preserving SA semantics).
 
 use ndarray::{s, Array1, Axis};
+use rand::SeedableRng;
 use rayon::prelude::*;
 
 use crate::chars::evaluate_all_chars;
@@ -25,6 +26,10 @@ use crate::types::{Chars, Image, SearchAlgorithm};
 /// canvas ("center focus"); each position uses its slice of it. Pass `None`
 /// for uniform weighting.
 ///
+/// `rng_seed` seeds the per-position RNGs used by simulated annealing, so a
+/// run is reproducible given the same seed (positions run in parallel, so each
+/// derives its own stream from `rng_seed + position`).
+///
 /// Returns updated choices, updated mockup, total comparisons, and mean error.
 pub fn optimize_layer_pass(
     bg: &Image,
@@ -37,6 +42,7 @@ pub fn optimize_layer_pass(
     mode: SearchAlgorithm,
     temperature: f32,
     weights: Option<&Image>,
+    rng_seed: u64,
 ) -> (u64, f32) {
     let num_positions = choices.len();
     let num_cols = target.ncols() / chars.shape()[2];
@@ -90,6 +96,7 @@ pub fn optimize_layer_pass(
                     greedy_search(&all_mses, cur_amse, prev_choice, &bg_slice, chars)
                 }
                 SearchAlgorithm::SimAnneal => {
+                    let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed.wrapping_add(i as u64));
                     simulated_annealing(
                         &all_mses,
                         cur_amse,
@@ -97,6 +104,7 @@ pub fn optimize_layer_pass(
                         &bg_slice,
                         chars,
                         temperature,
+                        &mut rng,
                     )
                 }
             };
@@ -190,9 +198,37 @@ mod tests {
         let cur_amse = all_mses[1];
 
         let (choice, _composite, comparisons) =
-            simulated_annealing(&all_mses, cur_amse, 1, &bg, &chars, 0.0);
+            simulated_annealing(&all_mses, cur_amse, 1, &bg, &chars, 0.0, &mut rand::rngs::StdRng::seed_from_u64(1));
         assert_eq!(choice, 1);
         assert_eq!(comparisons, 3);
+    }
+
+    #[test]
+    fn test_seeded_passes_are_reproducible() {
+        let chars = test_chars();
+        let bg = Image::from_elem((2, 2), 1.0);
+        let target = Image::from_shape_vec((2, 2), vec![0.4, 0.5, 0.6, 0.5]).unwrap();
+
+        let run = |rng_seed: u64| {
+            let mut mockup = Image::from_elem((2, 2), 1.0);
+            // One 2x2 char fits a 2x2 target: a single position
+            let mut choices = Array1::<u16>::zeros(1);
+            optimize_layer_pass(
+                &bg,
+                &mut mockup,
+                &target,
+                &chars,
+                &mut choices,
+                (0, 0),
+                0.1,
+                SearchAlgorithm::SimAnneal,
+                0.001,
+                None,
+                rng_seed,
+            );
+            choices
+        };
+        assert_eq!(run(7), run(7), "same seed → identical choices");
     }
 }
 
@@ -235,7 +271,8 @@ pub fn greedy_search(
 /// Precomputed MSEs are evaluated in random order, accepting the first
 /// candidate that passes the SA test. This preserves SA semantics while
 /// using batch-computed errors. `comparisons` counts the candidates actually
-/// examined (matching v1's early-exit counting).
+/// examined (matching v1's early-exit counting). The caller supplies the RNG
+/// for reproducibility.
 pub fn simulated_annealing(
     all_mses: &Array1<f32>,
     cur_amse: f32,
@@ -243,6 +280,7 @@ pub fn simulated_annealing(
     bg_slice: &Image,
     chars: &Chars,
     temperature: f32,
+    rng: &mut (impl rand::Rng + ?Sized),
 ) -> (u16, Image, u32) {
     let num_chars = chars.shape()[0] as u16;
 
@@ -250,8 +288,7 @@ pub fn simulated_annealing(
     let mut indices: Vec<u16> = (0..num_chars).collect();
     // Shuffle in-place
     use rand::seq::SliceRandom;
-    let mut rng = rand::thread_rng();
-    indices.shuffle(&mut rng);
+    indices.shuffle(rng);
 
     let mut comparisons: u32 = 0;
     for &new_idx in &indices {
@@ -272,7 +309,7 @@ pub fn simulated_annealing(
         // Probabilistically accept worse moves (SA)
         if temperature > 0.0 {
             let acceptance_prob = (delta / temperature).exp();
-            if acceptance_prob > rand::random::<f32>() {
+            if acceptance_prob > rng.gen::<f32>() {
                 let composite = bg_slice * &chars.index_axis(Axis(0), new_idx as usize);
                 return (new_idx, composite.to_owned(), comparisons);
             }

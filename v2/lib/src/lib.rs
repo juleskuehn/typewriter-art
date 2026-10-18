@@ -24,6 +24,7 @@
 //!     out_file: "results/final.png".into(),
 //!     align: AlignConfig::default(),
 //!     align_override: None,
+//!     seed: Some(42),
 //! };
 //!
 //! let result = optimize(config)?;

@@ -69,14 +69,19 @@ Auto-alignment (enabled by default; see below):
       --no-align             Skip the pre-optimization crop sweep
       --align-only           Run only the sweep: score all crops, save
                              alignment_scores.json + per-candidate mockups, exit
-      --align-steps <N>      Steps per parameter, N³ candidates (default: 4 = 64)
+      --align-steps <N>      Fine resolution: 1 step = 1/N char (default: 8)
       --align-passes <N>     Quick greedy passes per candidate (default: 1)
       --align-ssim-weight F  Score = SSIM × F + PSNR (default: 4.0)
       --align-refine-top <N> Rescore top N candidates with the full layer
                              stack (default: 8; 0 = cheap screen only)
-      --zoom <N>             Manual crop transform (skips the sweep)
-      --shift-x <N>          Manual crop transform (skips the sweep)
-      --shift-y <N>          Manual crop transform (skips the sweep)
+      --align-deluxe [N]     Deep-rerank the top N candidates with a real
+                             optimization run (N = 4 as a bare flag; 0 = off)
+      --align-rerank-loops L Loops per reranked candidate
+                             (default: max(3, num_loops / 2))
+      --zoom <N>             Manual crop transform (skips the sweep; signed,
+      --shift-x <N>           1 step = 1/align-steps char; positive shifts
+      --shift-y <N>           move content left/up)
+      --seed <N>             RNG seed for reproducible runs
   -h, --help                 Show help
 ```
 
@@ -87,7 +92,9 @@ grid strongly affects shape matching — the paper calls this "the primary facto
 when the typed image is small." Before optimizing, v2 therefore runs the paper's
 §3.4 auto-alignment routine (v1's `autoCrop`, ported from git history):
 
-1. Try all 64 combinations of small zoom and shift values (¼-char steps).
+1. Try a range of small zoom and shift values — signed `translate + scale` in
+   character fractions (v1's space was one-sided: shifts only left/up, zoom
+   only growing), on a coarse ¼-char grid that is refined locally at ⅛ char.
 2. Run a quick greedy optimization cycle for each cropped target.
 3. Score each quick mockup with `SSIM × 4 + PSNR`, keep the best crop, and
    apply it before the real optimization.
@@ -98,15 +105,20 @@ score region. Otherwise the crisp content/padding boundary — a big, easy
 feature for SSIM, which works much like an edge detector — can dominate the
 score and optimize the "frame" instead of the picture.
 
-Two stages keep the sweep cheap: every candidate is screened with a single
-placement pass (as v1 did), then the top `--align-refine-top` candidates are
-rescored with the full layer stack and ranked by that. Typical cost is a few
-seconds (vs ~10 minutes for the Python original); disable with `--no-align`.
+The sweep is an approximate-index style cascade: every candidate is screened
+with a single placement pass (as v1 did), the neighborhoods of the top few
+seeds are screened at ⅛-char fine steps, then the top `--align-refine-top`
+candidates are rescored with the full layer stack and ranked by that. With
+`--align-deluxe`, the top few are then deep-reranked — each gets a real
+optimization run (`--align-rerank-loops` loops) and the winner *continues* to
+the full loop budget instead of restarting. Typical cost is a few seconds (vs
+~10 minutes for the Python original); disable with `--no-align`.
 
-Differences from the v1 code, on purpose: shift steps follow the paper (¼ char,
-not the v1 code's ⅛ char), the score weights SSIM by 4 (v1: `ssim + psnr`), the
-quick pass is an exact greedy pass instead of ANN-assisted placement, and the
-winner is applied automatically instead of requiring a manual re-run.
+Differences from the v1 code, on purpose: the parameter space is signed and
+searched coarse-to-fine (v1: one-sided, fixed ¼-char steps), the score weights
+SSIM by 4 (v1: `ssim + psnr`), the quick pass is an exact greedy pass instead
+of ANN-assisted placement, and the winner is applied automatically instead of
+requiring a manual re-run.
 
 ## Center Focus
 

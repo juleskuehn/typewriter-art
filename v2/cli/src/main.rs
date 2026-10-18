@@ -135,7 +135,7 @@ struct Args {
     stream: bool,
 
     /// Disable the pre-optimization auto-alignment sweep (enabled by default).
-    /// The sweep tries 64 small zoom/shift crops of the target, runs a quick
+    /// The sweep tests small zoom/shift crops of the target, runs a quick
     /// greedy pass on each, and applies the crop that maximizes SSIM×4 + PSNR.
     #[arg(long = "no-align")]
     no_align: bool,
@@ -146,8 +146,9 @@ struct Args {
     #[arg(long = "align-only")]
     align_only: bool,
 
-    /// Auto-alignment steps per parameter (N gives N³ candidates; default 4 = 64)
-    #[arg(long = "align-steps", default_value = "4")]
+    /// Auto-alignment fine resolution: 1 step = 1/N of a character
+    /// (default 8 = ⅛ char; the coarse grid is ¼ char, refined locally)
+    #[arg(long = "align-steps", default_value = "8")]
     align_steps: u32,
 
     /// Quick greedy passes per alignment candidate (paper: 1)
@@ -163,17 +164,40 @@ struct Args {
     #[arg(long = "align-refine-top", default_value = "8")]
     align_refine_top: u32,
 
-    /// Manual crop transform (skips the sweep): zoom step
+    /// Deluxe mode: deep-rerank the top N candidates with a real optimization
+    /// run (N = 4 when given as a bare flag; 0 = off). The winner continues to
+    /// the full loop budget instead of restarting.
+    #[arg(
+        long = "align-deluxe",
+        num_args = 0..=1,
+        default_value = "0",
+        default_missing_value = "4"
+    )]
+    align_deluxe: u32,
+
+    /// Optimization loops per deluxe-reranked candidate
+    /// (default: max(3, num_loops / 2))
+    #[arg(long = "align-rerank-loops", default_value = "0")]
+    align_rerank_loops: u32,
+
+    /// RNG seed for reproducible runs (random init, SA, layer shuffle)
+    #[arg(long = "seed")]
+    seed: Option<u64>,
+
+    /// Manual crop transform (skips the sweep): zoom step (signed; 1 =
+    /// 1/align-steps of a character of boundary growth, negative shrinks)
     #[arg(long = "zoom")]
-    zoom: Option<u32>,
+    zoom: Option<i32>,
 
     /// Manual crop transform (skips the sweep): horizontal shift step
+    /// (signed; positive = left)
     #[arg(long = "shift-x")]
-    shift_x: Option<u32>,
+    shift_x: Option<i32>,
 
     /// Manual crop transform (skips the sweep): vertical shift step
+    /// (signed; positive = up)
     #[arg(long = "shift-y")]
-    shift_y: Option<u32>,
+    shift_y: Option<i32>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -229,12 +253,15 @@ fn main() -> anyhow::Result<()> {
         out_file: out_file.to_string_lossy().to_string(),
         align: AlignConfig {
             enabled: !args.no_align && align_override.is_none(),
-            steps: args.align_steps.max(1),
+            steps: args.align_steps.max(4),
             passes: args.align_passes.max(1),
             ssim_weight: args.align_ssim_weight,
             refine_top: args.align_refine_top,
+            rerank_top: args.align_deluxe,
+            rerank_loops: args.align_rerank_loops,
         },
         align_override,
+        seed: args.seed,
     };
 
     if !args.json && !args.stream {

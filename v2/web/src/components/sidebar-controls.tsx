@@ -177,6 +177,18 @@ export function SidebarControls() {
           Auto-align to character grid
         </label>
 
+        {/* Deluxe rerank */}
+        <label className="flex items-center gap-2 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            checked={config.align_deluxe}
+            onChange={(e) => setConfig("align_deluxe", e.target.checked)}
+            disabled={busy || config.align_enabled === false}
+            className="rounded"
+          />
+          Deluxe (deep-rerank top crops)
+        </label>
+
         {/* Center focus */}
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-gray-500">Center focus</label>

@@ -103,15 +103,19 @@ impl CenterFocus {
 
 /// One crop candidate for the auto-alignment sweep (paper §3.4).
 ///
-/// All fields are in step units: with `steps = 4` (the default) a value of 1
-/// means ¼ of a character — for `zoom` the container grows by ¼ char in each
-/// dimension, for the shifts the content moves left/up by ¼ char
-/// (`a, b, c ∈ {0, 0.25, 0.5, 0.75}` in the paper).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// All fields are in fine steps: value `v` means `v/steps` of a character
+/// (with `steps = 8` the default, 1 = ⅛ char). Unlike v1's one-sided space,
+/// parameters are signed: shifts can move the content in any direction
+/// (positive = left/up, matching v1) and zoom can shrink as well as grow
+/// (positive = the container grows by that fraction of a character).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CropTransform {
-    pub zoom: u32,
-    pub shift_x: u32,
-    pub shift_y: u32,
+    /// Scale: boundary growth in fine steps, signed (negative shrinks).
+    pub zoom: i32,
+    /// Horizontal translation in fine steps, signed (positive = left).
+    pub shift_x: i32,
+    /// Vertical translation in fine steps, signed (positive = up).
+    pub shift_y: i32,
 }
 
 /// Scored result for one alignment candidate.
@@ -131,12 +135,17 @@ pub struct AlignmentScore {
 /// Outcome of the auto-alignment sweep.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlignmentResult {
-    /// The chosen crop transform.
+    /// The chosen crop transform (the applied one — with the deluxe rerank
+    /// this can differ from `scores[0]`).
     pub best: CropTransform,
-    /// Steps per parameter (`steps³` candidates were evaluated).
+    /// Fine steps per parameter (`v` = `v/steps` of a character).
     pub steps: u32,
-    /// All candidates, sorted best-first.
+    /// Screen/refine candidates, sorted best-first by the quick score.
     pub scores: Vec<AlignmentScore>,
+    /// Deluxe rerank scores: the top candidates re-evaluated with a deeper
+    /// optimization run (scores are not comparable with `scores`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<Vec<AlignmentScore>>,
 }
 
 /// Full output of [`align::search()`], including optional candidate mockups.
@@ -155,26 +164,36 @@ pub struct AlignmentSearch {
 pub struct AlignConfig {
     /// Run the sweep before optimizing.
     pub enabled: bool,
-    /// Steps per parameter; `steps³` candidates (4 → 64, as in the paper).
+    /// Fine resolution: one parameter step = `1/steps` of a character
+    /// (8 → ⅛-char fine grid; the coarse grid is ¼-char).
     pub steps: u32,
     /// Quick greedy passes per candidate (paper: a single cycle).
     pub passes: u32,
     /// Score = `ssim * ssim_weight + psnr` (paper: 4.0).
     pub ssim_weight: f32,
-    /// Two-stage sweep for multi-layer configs: after screening every
-    /// candidate with a single placement pass, rescore the top `refine_top`
-    /// with the full layer stack and rank by that. 0 disables refinement.
+    /// Two-stage sweep: after screening every candidate with a single
+    /// placement pass, rescore the top `refine_top` with the full layer stack
+    /// and rank by that. 0 disables refinement.
     pub refine_top: u32,
+    /// Deluxe rerank: run a deeper optimization on the top `rerank_top`
+    /// candidates and pick the winner by that (approximate-index style exact
+    /// reranking). 0 = off.
+    pub rerank_top: u32,
+    /// Optimization loops per reranked candidate; 0 = auto
+    /// (`max(3, num_loops / 2)`). The winner continues to `num_loops` total.
+    pub rerank_loops: u32,
 }
 
 impl Default for AlignConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            steps: 4,
+            steps: 8,
             passes: 1,
             ssim_weight: 4.0,
             refine_top: 8,
+            rerank_top: 0,
+            rerank_loops: 0,
         }
     }
 }
@@ -241,6 +260,9 @@ pub struct OptimizeConfig {
     pub asymmetry: f32,
     /// Spatial weighting of the loss and alignment score ("center focus").
     pub center_focus: CenterFocus,
+    /// RNG seed for reproducible runs (random init, SA decisions, layer
+    /// shuffle). `None` = nondeterministic.
+    pub seed: Option<u64>,
     /// Search algorithm.
     pub search: SearchAlgorithm,
     /// Initial temperature for simulated annealing.

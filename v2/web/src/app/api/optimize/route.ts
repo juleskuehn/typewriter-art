@@ -26,8 +26,9 @@ function buildArgs(config: OptimizeConfig, imagePath: string, outDir: string): s
     "--stream",
   ];
   if (config.shuffle === false) args.push("--no-shuffle");
-  // Older persisted configs lack these fields; default to on/soft.
+  // Older persisted configs lack these fields; default to on/soft/no-deluxe.
   if (config.align_enabled === false) args.push("--no-align");
+  if (config.align_deluxe === true) args.push("--align-deluxe");
   args.push("--center-focus", config.center_focus ?? "soft");
   return args;
 }

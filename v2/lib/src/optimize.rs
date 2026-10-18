@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use ndarray::Axis;
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
 
 use crate::align;
 use crate::charset::{prep_charset, LoadedCharset};
@@ -17,8 +18,8 @@ use crate::render::{combine_layers, compute_background, render_all_layers, rende
 use crate::resize::resize_target;
 use crate::search::optimize_layer_pass;
 use crate::types::{
-    AlignmentResult, Chars, CharShape, FractionalOffset, Image, InitMode, LayerOffset, Layers,
-    OptimizeConfig, OptimizeResult, Padding, Stats,
+    AlignmentResult, AlignmentScore, Chars, CharShape, FractionalOffset, Image, InitMode,
+    LayerOffset, Layers, OptimizeConfig, OptimizeResult, Padding, Stats,
 };
 
 /// Progress event emitted during optimization (for streaming).
@@ -100,24 +101,24 @@ fn optimize_inner(
     // Scored over the image content only — not the padding border.
     let content = padding.content_rect((target.nrows(), target.ncols()));
     let progress_tx = progress_tx.map(std::sync::Mutex::new);
-    let (target, alignment, content) = match config.align_override {
+    let (best_transform, mut alignment) = match config.align_override {
         Some(t) => {
             log::info!("Using manual crop transform: {:?}", t);
-            let (aligned, score_rect) =
-                align::apply_crop(&target, &t, char_shape, content, config.align.steps);
             (
-                aligned,
+                Some(t),
                 Some(AlignmentResult {
                     best: t,
                     steps: config.align.steps,
                     scores: Vec::new(),
+                    rerank: None,
                 }),
-                score_rect,
             )
         }
         None if config.align.enabled => {
-            let total = config.align.steps.pow(3) as usize;
-            log::info!("Auto-alignment: evaluating {} candidates", total);
+            log::info!(
+                "Auto-alignment: screening candidates (fine steps = 1/{} char)",
+                config.align.steps
+            );
             let progress = |completed: usize, total: usize| {
                 log::debug!("Align: evaluated {}/{} candidates", completed, total);
                 if let Some(tx) = progress_tx.as_ref() {
@@ -138,13 +139,6 @@ fn optimize_inner(
                 false,
                 Some(&progress),
             );
-            let (aligned, score_rect) = align::apply_crop(
-                &target,
-                &search.result.best,
-                char_shape,
-                content,
-                config.align.steps,
-            );
             log::info!(
                 "Auto-alignment: best zoom {} shift ({}, {}), score {:.3}",
                 search.result.best.zoom,
@@ -152,78 +146,285 @@ fn optimize_inner(
                 search.result.best.shift_y,
                 search.result.scores.first().map(|s| s.score).unwrap_or(0.0),
             );
-            (aligned, Some(search.result), score_rect)
+            let best = search.result.best;
+            (Some(best), Some(search.result))
         }
-        None => (target, None, content),
+        None => (None, None),
     };
-
-    let num_layers = layer_offsets.len();
-    log::info!(
-        "Layers: {} ({})",
-        num_layers,
-        format_offsets(&fractional_offsets)
-    );
 
     // Determine output shape with padding for layer offsets
+    log::info!(
+        "Layers: {} ({})",
+        layer_offsets.len(),
+        format_offsets(&fractional_offsets)
+    );
     let max_offset_y = layer_offsets.iter().map(|o| o.0).max().unwrap_or(0);
     let max_offset_x = layer_offsets.iter().map(|o| o.1).max().unwrap_or(0);
-    let out_h = target.nrows() + max_offset_y;
-    let out_w = target.ncols() + max_offset_x;
+    let out_shape = (target.nrows() + max_offset_y, target.ncols() + max_offset_x);
+    let num_loops = config.num_loops;
 
-    // Pad target to output size (fill with white = 1.0)
-    let target_padded = {
-        let mut padded = Image::from_elem((out_h, out_w), 1.0f32);
-        let mut view = padded.slice_mut(ndarray::s![..target.nrows(), ..target.ncols()]);
-        view.assign(&target);
-        padded
+    // Deluxe rerank: deep-evaluate the top candidates and keep the winner's
+    // run state, which continues to `num_loops` instead of restarting.
+    let rerank_top = if alignment
+        .as_ref()
+        .map_or(false, |a| !a.scores.is_empty() && config.align.rerank_top > 0)
+    {
+        (config.align.rerank_top as usize)
+            .min(alignment.as_ref().unwrap().scores.len())
+    } else {
+        0
     };
 
-    // Initialize mockup (all white)
-    let mut mockup = Image::from_elem((out_h, out_w), 1.0f32);
+    let mut reranked: Option<Vec<AlignmentScore>> = None;
+    let mut winner: Option<(RunState, Image, (usize, usize, usize, usize))> = None;
 
-    // Spatial loss weights ("center focus"); None = uniform weighting
-    let loss_weights = crate::weights::container_map((out_h, out_w), content, config.center_focus);
+    if rerank_top > 0 {
+        let rerank_loops = if config.align.rerank_loops > 0 {
+            config.align.rerank_loops
+        } else {
+            (num_loops / 2).max(3)
+        }
+        .min(num_loops);
+        log::info!(
+            "Deluxe rerank: top {} candidates × {} loops",
+            rerank_top, rerank_loops
+        );
 
-    // Initialize choices
+        let mut scores = Vec::with_capacity(rerank_top);
+        let mut best_score = f32::NEG_INFINITY;
+        for (k, entry) in alignment.as_ref().unwrap().scores[..rerank_top]
+            .iter()
+            .enumerate()
+        {
+            let t = entry.transform;
+            // Each candidate gets its own transform of the *original* target
+            let (cand_target, cand_rect) =
+                align::apply_crop(&target, &t, char_shape, content, config.align.steps);
+            let cand_padded = pad_to(&cand_target, out_shape);
+            let cand_weights =
+                crate::weights::container_map(out_shape, cand_rect, config.center_focus);
+            let mut cand_state = init_state(
+                &cand_padded,
+                &chars,
+                &layer_offsets,
+                num_cols,
+                num_positions,
+                &config,
+            );
+            run_loops(
+                &mut cand_state,
+                &cand_padded,
+                &chars,
+                &layer_offsets,
+                cand_weights.as_ref(),
+                num_cols,
+                &config,
+                rerank_loops,
+                0,
+                None,
+            );
+            let (score, psnr, ssim) = align::score_mockup(
+                &cand_target,
+                &cand_state.mockup,
+                cand_rect,
+                config.center_focus,
+                config.align.ssim_weight,
+            );
+            log::info!(
+                "Deluxe rerank {}/{}: zoom {} shift ({}, {}) → score {:.3}",
+                k + 1,
+                rerank_top,
+                t.zoom,
+                t.shift_x,
+                t.shift_y,
+                score
+            );
+            if let Some(tx) = progress_tx.as_ref() {
+                let _ = tx.lock().unwrap().send(ProgressEvent::Align {
+                    candidate: k + 1,
+                    total: rerank_top,
+                });
+            }
+            scores.push(AlignmentScore {
+                transform: t,
+                psnr,
+                ssim,
+                score,
+                refined: true,
+            });
+            if score > best_score {
+                best_score = score;
+                winner = Some((cand_state, cand_target, cand_rect));
+            }
+        }
+        scores.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        reranked = Some(scores);
+    }
+
+    // Resolve the target: the rerank winner's, or the quick best transform's
+    let (target, content, mut state) = match winner {
+        Some((state, target, rect)) => (target, rect, state),
+        None => {
+            let (target, content) = match best_transform {
+                Some(t) => align::apply_crop(&target, &t, char_shape, content, config.align.steps),
+                None => (target, content),
+            };
+            let target_padded = pad_to(&target, out_shape);
+            let state = init_state(&target_padded, &chars, &layer_offsets, num_cols, num_positions, &config);
+            (target, content, state)
+        }
+    };
+    if let Some(ref mut a) = alignment {
+        if let Some(scores) = reranked {
+            a.best = scores[0].transform;
+            a.rerank = Some(scores);
+        }
+    }
+
+    let target_padded = pad_to(&target, out_shape);
+    let loss_weights = crate::weights::container_map(out_shape, content, config.center_focus);
+    let completed_loops = if rerank_top > 0 {
+        state.error_over_time.len() / layer_offsets.len().max(1)
+    } else {
+        0
+    };
+
+    // Run the remaining optimization loops (all of them, unless the deluxe
+    // rerank already advanced the winner)
+    run_loops(
+        &mut state,
+        &target_padded,
+        &chars,
+        &layer_offsets,
+        loss_weights.as_ref(),
+        num_cols,
+        &config,
+        num_loops.saturating_sub(completed_loops as u32),
+        completed_loops as u32,
+        progress_tx.as_ref(),
+    );
+
+    let elapsed = start.elapsed();
+    let final_error = state.error_over_time.last().copied().unwrap_or(0.0);
+
+    Ok(OptimizeResult {
+        mockup: state.mockup,
+        layers: state.layers,
+        choices: state.choices,
+        error_over_time: state.error_over_time,
+        stats: Stats {
+            total_time_ns: elapsed.as_nanos() as u64,
+            total_comparisons: state.total_comparisons,
+            final_error,
+        },
+        padding,
+        num_rows,
+        num_cols,
+        fractional_offsets,
+        layer_offsets,
+        alignment,
+    })
+}
+
+/// Mutable state of an optimization run, so a run can be paused and continued
+/// (the deluxe rerank keeps the winner's state and finishes it).
+struct RunState {
+    layers: Layers,
+    choices: ndarray::Array2<u16>,
+    mockup: Image,
+    error_over_time: Vec<f32>,
+    total_comparisons: u64,
+}
+
+/// Pad a target to the output shape (white = 1.0) for layer offsets.
+fn pad_to(target: &Image, out_shape: (usize, usize)) -> Image {
+    let mut padded = Image::from_elem(out_shape, 1.0f32);
+    padded
+        .slice_mut(ndarray::s![..target.nrows(), ..target.ncols()])
+        .assign(target);
+    padded
+}
+
+/// Initialize a run state (blank or random character assignments).
+/// Seeded runs use a deterministic RNG.
+fn init_state(
+    target_padded: &Image,
+    chars: &Chars,
+    layer_offsets: &[LayerOffset],
+    num_cols: usize,
+    num_positions: usize,
+    config: &OptimizeConfig,
+) -> RunState {
+    let num_layers = layer_offsets.len();
+    let out_shape = (target_padded.nrows(), target_padded.ncols());
     let mut choices = ndarray::Array2::<u16>::zeros((num_layers, num_positions));
 
-    // Initialize layers based on init_mode
-    let mut layers: Layers;
-    if matches!(config.init_mode, InitMode::Random) {
-        let mut rng = rand::thread_rng();
+    let (layers, mockup) = if matches!(config.init_mode, InitMode::Random) {
+        let mut rng = config
+            .seed
+            .map(rand::rngs::StdRng::seed_from_u64)
+            .unwrap_or_else(rand::rngs::StdRng::from_entropy);
         for l in 0..num_layers {
             for p in 0..num_positions {
                 choices[[l, p]] = rand::Rng::gen_range(&mut rng, 0..chars.shape()[0] as u16);
             }
         }
-        layers = render_all_layers(
-            &choices,
-            &chars,
-            num_cols,
-            &layer_offsets,
-            (out_h, out_w),
-        );
-        mockup = combine_layers(&layers);
+        let layers = render_all_layers(&choices, chars, num_cols, layer_offsets, out_shape);
+        let mockup = combine_layers(&layers);
+        (layers, mockup)
     } else {
         // Blank — layers are all-white, choices are blank char (index 0)
-        layers = Layers::from_elem((num_layers, out_h, out_w), 1.0f32);
+        (
+            Layers::from_elem((num_layers, out_shape.0, out_shape.1), 1.0),
+            Image::from_elem(out_shape, 1.0),
+        )
+    };
+
+    RunState {
+        layers,
+        choices,
+        mockup,
+        error_over_time: Vec::new(),
+        total_comparisons: 0,
     }
+}
 
-    let num_loops = config.num_loops as usize;
-    // Error over time: one entry per layer pass
-    let mut error_over_time: Vec<f32> = Vec::with_capacity(num_loops * num_layers);
-    let mut total_comparisons: u64 = 0;
+/// Run `loops_to_run` optimization loops, continuing a run that already
+/// completed `loops_done` loops (temperature schedule and progress numbering
+/// continue where the previous run stopped).
+#[allow(clippy::too_many_arguments)]
+fn run_loops(
+    state: &mut RunState,
+    target_padded: &Image,
+    chars: &Chars,
+    layer_offsets: &[LayerOffset],
+    loss_weights: Option<&Image>,
+    num_cols: usize,
+    config: &OptimizeConfig,
+    loops_to_run: u32,
+    loops_done: u32,
+    progress_tx: Option<&std::sync::Mutex<mpsc::Sender<ProgressEvent>>>,
+) {
+    let num_layers = layer_offsets.len();
+    let out_shape = (target_padded.nrows(), target_padded.ncols());
 
-    // Create shuffled layer order list (re-shuffled each loop)
+    // Layer order list (re-shuffled each loop)
     let mut shuffled_layers: Vec<(usize, LayerOffset)> = layer_offsets
         .iter()
         .enumerate()
         .map(|(i, &o)| (i, o))
         .collect();
+    let mut shuffle_rng = config
+        .seed
+        .map(|s| rand::rngs::StdRng::seed_from_u64(s.wrapping_add(loops_done as u64)))
+        .unwrap_or_else(rand::rngs::StdRng::from_entropy);
 
-    let mut rng = rand::thread_rng();
-
-    for loop_num in 0..num_loops {
+    for i in 0..loops_to_run {
+        let loop_num = loops_done + i;
         let temperature = if config.init_temp > 0.0 {
             config.init_temp / (loop_num + 1) as f32
         } else {
@@ -231,65 +432,71 @@ fn optimize_inner(
         };
 
         if config.shuffle {
-            shuffled_layers.shuffle(&mut rng);
+            shuffled_layers.shuffle(&mut shuffle_rng);
         }
 
         for &(layer_num, layer_offset) in &shuffled_layers {
             // Compute background = product of all OTHER layers
-            let bg = compute_background(&layers, layer_num);
+            let bg = compute_background(&state.layers, layer_num);
 
             // Get this layer's choices as a mutable 1D slice
-            let mut layer_choices = choices
-                .index_axis(Axis(0), layer_num)
-                .to_owned();
+            let mut layer_choices = state.choices.index_axis(Axis(0), layer_num).to_owned();
+
+            // Per-pass RNG seed (deterministic when the run is seeded)
+            let pass_seed = config.seed.map_or_else(rand::random::<u64>, |s| {
+                s.wrapping_add(((loop_num as u64) << 32) | layer_num as u64)
+            });
 
             // Run optimization pass
             let (comparisons, mean_err) = optimize_layer_pass(
                 &bg,
-                &mut mockup,
-                &target_padded,
-                &chars,
+                &mut state.mockup,
+                target_padded,
+                chars,
                 &mut layer_choices,
                 layer_offset,
                 config.asymmetry,
                 config.search,
                 temperature,
-                loss_weights.as_ref(),
+                loss_weights,
+                pass_seed,
             );
 
             // Update choices
-            choices
+            state
+                .choices
                 .index_axis_mut(Axis(0), layer_num)
                 .assign(&layer_choices);
 
             // Re-render this layer with updated choices
             let updated_layer = render_layer(
                 layer_choices.as_slice().unwrap(),
-                &chars,
+                chars,
                 num_cols,
                 layer_offset,
-                (out_h, out_w),
+                out_shape,
             );
-            layers
+            state
+                .layers
                 .index_axis_mut(Axis(0), layer_num)
                 .assign(&updated_layer);
 
             // Update mockup
-            mockup = combine_layers(&layers);
+            state.mockup = combine_layers(&state.layers);
 
-            total_comparisons += comparisons;
-            error_over_time.push(mean_err);
+            state.total_comparisons += comparisons;
+            state.error_over_time.push(mean_err);
 
             // Emit progress event if streaming (mockup only on first layer of each loop)
-            if let Some(tx) = progress_tx.as_ref() {
+            if let Some(tx) = progress_tx {
                 let mockup_b64 = if layer_num == 0 {
-                    image_to_base64_png(&mockup).ok()
+                    image_to_base64_png(&state.mockup).ok()
                 } else {
                     None
                 };
                 let _ = tx.lock().unwrap().send(ProgressEvent::Loop {
-                    loop_num: loop_num + 1,
-                    num_loops,
+                    loop_num: loop_num as usize + 1,
+                    num_loops: config.num_loops as usize,
                     layer_num: layer_num + 1,
                     num_layers,
                     error: mean_err,
@@ -300,7 +507,7 @@ fn optimize_inner(
             log::debug!(
                 "Loop {}/{}, layer {}/{} (offset {:?}): err={:.6}, comps={}",
                 loop_num + 1,
-                num_loops,
+                config.num_loops,
                 layer_num + 1,
                 num_layers,
                 layer_offset,
@@ -309,27 +516,6 @@ fn optimize_inner(
             );
         }
     }
-
-    let elapsed = start.elapsed();
-    let final_error = error_over_time.last().copied().unwrap_or(0.0);
-
-    Ok(OptimizeResult {
-        mockup,
-        layers,
-        choices,
-        error_over_time,
-        stats: Stats {
-            total_time_ns: elapsed.as_nanos() as u64,
-            total_comparisons,
-            final_error,
-        },
-        padding,
-        num_rows,
-        num_cols,
-        fractional_offsets,
-        layer_offsets,
-        alignment,
-    })
 }
 
 /// Inputs shared by the optimization pipeline and the alignment sweep.
