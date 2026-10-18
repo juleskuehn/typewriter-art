@@ -13,8 +13,8 @@ export function LayerView({ result }: { result: OptimizeResult }) {
   if (totalLayers === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-sm text-gray-400">
-        Layer images are not kept after a page reload — re-optimize to see them
-        again.
+        Layer images aren&apos;t available for this entry — re-optimize to generate
+        them.
       </div>
     );
   }

@@ -10,6 +10,7 @@ import type {
 } from "@/lib/types";
 import { DEFAULT_CONFIG } from "@/lib/types";
 import { runOptimization } from "@/lib/api";
+import { idbGet, idbSet, idbRemove } from "@/lib/idb";
 
 function uid(): string {
   return crypto.randomUUID().slice(0, 8);
@@ -34,38 +35,34 @@ function makeThumbnail(dataUrl: string): Promise<string> {
 }
 
 /**
- * Persistence budgeting.
+ * Persistence.
  *
- * localStorage is a ~5 MB synchronous string store, and zustand's persist
- * middleware calls `setItem()` after **every** `set()`. A history item can carry
- * a full source image plus a full-resolution mockup, and `optimize()` calls
- * `set()` once per progress event — so a single 480-event run used to serialize
- * the entire history 480 times and then throw QuotaExceededError.
+ * History lives in IndexedDB, not localStorage. localStorage is a synchronous
+ * ~5 MB store and one optimized entry is roughly 1 MB (full source image plus a
+ * full-resolution mockup), so two or three entries overflowed it — surfacing as
+ * QuotaExceededError — and any photo over ~375 KB could not be re-optimized
+ * after a reload. IndexedDB is asynchronous with a far larger per-origin quota,
+ * so full images and results are kept intact.
  *
- * Three defences:
- *  1. `toPersisted` keeps the payload under a fixed byte budget, dropping the
- *     oldest items first (they survive in the live session, just not a reload).
- *  2. Persistence is suspended during a run so progress ticks cost O(1) and the
- *     result is written exactly once, when the run finishes.
- *  3. `persistStorage.setItem` never throws — on quota pressure the write is
- *     skipped rather than breaking the run.
+ * Two things still matter even with a large quota:
+ *  1. zustand's persist middleware runs `setItem()` after **every** `set()`, and
+ *     `optimize()` calls `set()` once per SSE progress event. Persistence is
+ *     suspended during a run so progress ticks cost O(1) and the result is
+ *     written exactly once, when the run finishes.
+ *  2. Storage access never throws into application code — a full or unavailable
+ *     store must not fail the optimization the user just waited for.
  */
 const STORAGE_KEY = "typewriter-art-history";
 
-/** Stay comfortably under the typical 5 MB localStorage quota. */
-const PERSIST_BUDGET_BYTES = 3_000_000;
-
 /**
- * Per-item cap on the source image. Matches the original rule (`< 500_000`),
- * and guarantees one oversized upload cannot starve every other entry.
- * Larger uploads are simply not re-optimizable after a reload.
+ * Safety valve rather than a design limit: if history ever grows past this the
+ * oldest entries are dropped, instead of filling the origin's storage quota.
  */
-const MAX_SOURCE_IMAGE_CHARS = 500_000;
+const PERSIST_BUDGET_BYTES = 64 * 1024 * 1024;
 
 /**
  * Rough persisted size of a string field. Base64 is ~1 byte per char and the
- * JSON escaping it needs is negligible, so `.length` is a good enough estimate;
- * the try/catch in `persistStorage` covers the tail risk.
+ * structured clone overhead is negligible, so `.length` is close enough.
  */
 function estimateChars(value: string | undefined): number {
   return value ? value.length : 0;
@@ -74,128 +71,174 @@ function estimateChars(value: string | undefined): number {
 /** True while an optimization run is in flight — see note above. */
 let persistSuspended = false;
 
-/** Last serialized snapshot, reused while persistence is suspended. */
+/** Last snapshot, reused while persistence is suspended. */
 let lastSnapshot: PersistedState | null = null;
 
-/** Minimal persisted data — bounded thumbnails, config and stats. */
-interface PersistedItem {
-  id: string;
-  thumbnail: string;
-  /**
-   * Full image, kept only while the budget allows. Absent means we only have
-   * the thumbnail after a reload — see `sourceImageLost`.
-   */
-  imageDataUrl?: string;
-  config: OptimizeConfig;
-  /** Stats + mockup only — full layers are never persisted. */
-  resultMeta: {
-    stats: OptimizeResult["stats"];
-    mockup_base64: string;
-    num_rows: number;
-    num_cols: number;
-    error_over_time: number[];
-  } | null;
-  timestamp: number;
-  /** Set when the full source image had to be dropped to stay in budget. */
-  sourceImageLost?: boolean;
+interface PersistedState {
+  history: HistoryItem[];
 }
 
-interface PersistedState {
-  history: PersistedItem[];
+/** Approximate persisted footprint of one entry. */
+function estimateItem(h: HistoryItem): number {
+  let size = estimateChars(h.thumbnail) + estimateChars(h.imageDataUrl) + 512;
+  const r = h.result;
+  if (r) {
+    size += estimateChars(r.mockup_base64);
+    for (const layer of r.layers_base64) size += estimateChars(layer);
+    size += r.error_over_time.length * 24; // number + separators
+    size += 2048; // choices grid + stats + fractional offsets
+  }
+  return size;
 }
 
 /**
- * History items in persistence order (newest first), trimmed to the byte
- * budget.
+ * Entries in persistence order (newest first), trimmed to the budget.
  *
- * Allocation is two passes so one oversized field cannot starve the rest:
- *  - Pass 1 gives every entry its thumbnail and its result — that is the work
- *    the user actually waited for and what the UI shows.
- *  - Pass 2 spends what is left on source images (newest first), which are only
- *    needed to re-optimize and can be re-uploaded.
+ * Only whole entries are dropped and only as a last resort — with IndexedDB
+ * this is a safety valve, not a routine occurrence. The live session is never
+ * affected by trimming.
  */
-function toPersisted(history: HistoryItem[]): PersistedItem[] {
-  const out: PersistedItem[] = [];
+function toPersisted(history: HistoryItem[]): PersistedState {
+  const out: HistoryItem[] = [];
   let budget = PERSIST_BUDGET_BYTES;
 
-  // Pass 1 — thumbnails and results.
   for (const h of history) {
-    const item: PersistedItem = {
-      id: h.id,
-      thumbnail: h.thumbnail,
-      config: h.config,
-      resultMeta: null,
-      timestamp: h.timestamp,
-      sourceImageLost: true,
-    };
-
-    let size = estimateChars(h.thumbnail) + 256; // 256 ≈ id/config/timestamp JSON
-
-    if (h.result) {
-      const mockup = estimateChars(h.result.mockup_base64);
-      const curve = h.result.error_over_time.length * 24; // number + separators
-      if (size + mockup + curve <= budget) {
-        item.resultMeta = {
-          stats: h.result.stats,
-          mockup_base64: h.result.mockup_base64,
-          num_rows: h.result.num_rows,
-          num_cols: h.result.num_cols,
-          error_over_time: h.result.error_over_time,
-        };
-        size += mockup + curve;
-      }
-    }
-
-    // Not even room for the thumbnail — everything older is larger still.
+    const size = estimateItem(h);
     if (size > budget) break;
-
     budget -= size;
-    out.push(item);
+    out.push(h);
   }
 
-  // Pass 2 — source images, newest first, each individually capped.
-  for (let i = 0; i < out.length; i++) {
-    // Already degraded: `imageDataUrl` is just the ~200px thumbnail at this
-    // point. Never re-assert it as a real source image, or the next reload
-    // would silently "restore" a preview and allow optimizing it.
-    if (history[i].sourceImageLost) continue;
-    const src = history[i].imageDataUrl;
-    if (src === history[i].thumbnail) continue;
-    const srcSize = estimateChars(src);
-    if (!src || srcSize > MAX_SOURCE_IMAGE_CHARS || srcSize > budget) continue;
-    out[i].imageDataUrl = src;
-    out[i].sourceImageLost = false;
-    budget -= srcSize;
-  }
-
-  return out;
+  return { history: out };
 }
 
 /**
- * Direct `PersistStorage` rather than `createJSONStorage`, so the stringify
- * happens here and can be skipped entirely while a run is in flight.
+ * Normalize whatever was found in storage into a `HistoryItem`.
+ *
+ * Handles the legacy localStorage shape (a `resultMeta` summary instead of a
+ * full `result`, with no layers/choices) and self-heals entries where an older
+ * build persisted the ~200px thumbnail in place of a source image it had
+ * dropped — a "source" byte-identical to the thumbnail is a degraded fallback,
+ * never a real upload.
+ */
+function normalizeItem(raw: unknown): HistoryItem | null {
+  const item = raw as
+    | (Partial<HistoryItem> & {
+        resultMeta?: {
+          stats: OptimizeResult["stats"];
+          mockup_base64: string;
+          num_rows: number;
+          num_cols: number;
+          error_over_time: number[];
+        };
+      })
+    | null
+    | undefined;
+  if (!item || typeof item.id !== "string") return null;
+
+  const thumbnail = typeof item.thumbnail === "string" ? item.thumbnail : "";
+  const imageDataUrl = typeof item.imageDataUrl === "string" ? item.imageDataUrl : undefined;
+  const degraded = !imageDataUrl || imageDataUrl === thumbnail;
+
+  let result: OptimizeResult | null = null;
+  if (item.result && typeof item.result === "object") {
+    result = item.result;
+  } else if (item.resultMeta) {
+    const m = item.resultMeta;
+    result = {
+      mockup_base64: m.mockup_base64 ?? "",
+      layers_base64: [],
+      num_rows: m.num_rows ?? 0,
+      num_cols: m.num_cols ?? 0,
+      fractional_offsets: [],
+      stats: m.stats ?? { total_time_ns: 0, total_comparisons: 0, final_error: 0 },
+      error_over_time: m.error_over_time ?? [],
+      choices: {},
+    };
+  }
+
+  return {
+    id: item.id,
+    thumbnail,
+    // Display only — `sourceImageLost` blocks re-optimizing a fallback.
+    imageDataUrl: imageDataUrl ?? thumbnail,
+    sourceImageLost: degraded || item.sourceImageLost === true,
+    config: item.config ?? { ...DEFAULT_CONFIG },
+    result,
+    timestamp: typeof item.timestamp === "number" ? item.timestamp : 0,
+  };
+}
+
+function normalizeStored(input: unknown): PersistedState | null {
+  const container = input as { state?: { history?: unknown[] } } | null | undefined;
+  const history = container?.state?.history;
+  if (!Array.isArray(history)) return null;
+  return { history: history.map(normalizeItem).filter((h): h is HistoryItem => h !== null) };
+}
+
+/**
+ * `PersistStorage` over IndexedDB, with a one-time migration from the
+ * localStorage key that older builds used.
+ *
+ * `getItem` always resolves rather than rejecting, so zustand's hydration
+ * always completes and the UI can leave its loading state even when storage is
+ * unavailable (e.g. private browsing).
  */
 const persistStorage = {
-  getItem: (name: string): { state: PersistedState; version?: number } | null => {
+  getItem: async (
+    name: string
+  ): Promise<{ state: PersistedState; version?: number } | null> => {
     try {
-      const raw = localStorage.getItem(name);
-      return raw ? (JSON.parse(raw) as { state: PersistedState; version?: number }) : null;
+      const stored = normalizeStored(await idbGet<unknown>(name));
+      if (stored) return { state: stored };
     } catch {
-      return null;
+      // No usable IndexedDB — fall through to the legacy key.
     }
+
+    // Migrate the localStorage payload older builds wrote, then delete it:
+    // that key is the one that kept overflowing its ~5 MB quota.
+    try {
+      if (typeof localStorage !== "undefined") {
+        const raw = localStorage.getItem(name);
+        if (raw) {
+          const stored = normalizeStored(JSON.parse(raw));
+          if (stored) {
+            try {
+              await idbSet(name, { state: stored });
+              localStorage.removeItem(name);
+            } catch {
+              // Migration is best-effort; the data still loads for this session.
+            }
+            return { state: stored };
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed legacy data.
+    }
+
+    return null;
   },
-  setItem: (name: string, value: { state: PersistedState; version?: number }): void => {
+  setItem: async (
+    name: string,
+    value: { state: PersistedState; version?: number }
+  ): Promise<void> => {
     if (persistSuspended) return;
     try {
-      localStorage.setItem(name, JSON.stringify(value));
+      await idbSet(name, value);
     } catch {
-      // QuotaExceededError (or private-mode storage) — losing persisted history
-      // is far better than failing the optimization the user just waited for.
+      // Losing persisted history is far better than failing the optimization
+      // the user just waited for.
     }
   },
-  removeItem: (name: string): void => {
+  removeItem: async (name: string): Promise<void> => {
     try {
-      localStorage.removeItem(name);
+      await idbRemove(name);
+    } catch {
+      // ignore
+    }
+    try {
+      if (typeof localStorage !== "undefined") localStorage.removeItem(name);
     } catch {
       // ignore
     }
@@ -208,6 +251,11 @@ interface OptimizerStore {
   centerTab: CenterTab;
   /** Whether the user is in "new image" upload mode (empty center) */
   newImageMode: boolean;
+  /**
+   * False until persisted history has loaded. Storage is asynchronous, so the
+   * UI waits rather than flashing the empty state over real history.
+   */
+  hydrated: boolean;
 
   activeItem: () => HistoryItem | null;
 
@@ -227,6 +275,7 @@ export const useOptimizerStore = create<OptimizerStore>()(
       activeId: null,
       centerTab: "input",
       newImageMode: true,
+      hydrated: false,
 
       activeItem: () => {
         const { history, activeId } = get();
@@ -386,53 +435,30 @@ export const useOptimizerStore = create<OptimizerStore>()(
       partialize: (state) => {
         // O(1) during a run — see `persistSuspended`.
         if (persistSuspended) return lastSnapshot ?? { history: [] };
-        lastSnapshot = { history: toPersisted(state.history) };
+        lastSnapshot = toPersisted(state.history);
         return lastSnapshot;
       },
-      // Rehydrate: reconstruct full HistoryItem from persisted data
+      // `getItem` has already normalized whatever was in storage, including
+      // migrating the legacy localStorage shape and self-healing entries whose
+      // "source" is just the thumbnail.
       merge: (persisted: unknown, current) => {
-        const p = persisted as {
-          history?: PersistedItem[];
-        };
+        const p = persisted as PersistedState | undefined;
         if (!p?.history) return current as OptimizerStore;
-
-        const rehydrated: HistoryItem[] = p.history.map((pi) => {
-          // A "source" that is byte-identical to the thumbnail is a degraded
-          // fallback, not a real upload — treat it as lost even if an older
-          // build recorded `sourceImageLost: false`. This self-heals records
-          // that were persisted before the per-item cap existed.
-          const degraded = !pi.imageDataUrl || pi.imageDataUrl === pi.thumbnail;
-          return {
-            id: pi.id,
-            thumbnail: pi.thumbnail,
-            // Used for display only; `sourceImageLost` blocks re-optimizing.
-            imageDataUrl: pi.imageDataUrl ?? pi.thumbnail,
-            sourceImageLost: degraded || pi.sourceImageLost === true,
-            config: pi.config ?? { ...DEFAULT_CONFIG },
-            result: pi.resultMeta
-              ? {
-                  mockup_base64: pi.resultMeta.mockup_base64,
-                  layers_base64: [], // layers not persisted — will be empty
-                  num_rows: pi.resultMeta.num_rows,
-                  num_cols: pi.resultMeta.num_cols,
-                  fractional_offsets: [],
-                  stats: pi.resultMeta.stats,
-                  error_over_time: pi.resultMeta.error_over_time,
-                  choices: {},
-                }
-              : null,
-            timestamp: pi.timestamp ?? 0,
-          };
-        });
-
-        return {
-          ...(current as OptimizerStore),
-          history: rehydrated,
-        };
+        return { ...(current as OptimizerStore), history: p.history };
       },
     }
   )
 );
+
+//
+// Storage is asynchronous, so history lands after the first render. The UI
+// gates on `hydrated` rather than flashing the empty state over real history.
+// `persistStorage.getItem` always resolves instead of rejecting, so this
+// listener is guaranteed to fire even when storage is unavailable.
+//
+const finishHydration = () => useOptimizerStore.setState({ hydrated: true });
+useOptimizerStore.persist.onFinishHydration(finishHydration);
+if (useOptimizerStore.persist.hasHydrated()) finishHydration();
 
 export function useActiveItem() {
   return useOptimizerStore((s) => s.activeItem());
