@@ -1,16 +1,31 @@
 import type { OptimizeConfig, OptimizeResult } from "@/lib/types";
 
 /**
- * Send an image + config to the server and get back the optimization result.
+ * Progress event from the SSE stream (before completion).
+ */
+export interface ProgressEvent {
+  loop_num: number;
+  num_loops: number;
+  layer_num: number;
+  num_layers: number;
+  error: number;
+  mockup_b64: string | null;
+}
+
+export type OptimizeProgressCallback = (event: ProgressEvent) => void;
+
+/**
+ * Send an image + config to the server and receive SSE progress + final result.
  *
- * Converts the image data URL to a Blob, sends as multipart form data
- * along with the optimization config, and the server returns the JSON result.
+ * Calls `onProgress` for each progress event (with optional mockup base64),
+ * and resolves with the final result on completion.
  */
 export async function runOptimization(
   imageDataUrl: string,
-  config: OptimizeConfig
+  config: OptimizeConfig,
+  onProgress?: OptimizeProgressCallback
 ): Promise<OptimizeResult> {
-  // Decode data URL to Blob (more reliable than fetch(dataUrl) for large files)
+  // Decode data URL to Blob
   const [header, base64] = imageDataUrl.split(",");
   const mimeType = header.match(/data:([^;]+)/)?.[1] || "image/png";
   const ext = mimeType.split("/")[1] || "png";
@@ -36,5 +51,80 @@ export async function runOptimization(
     throw new Error(`Optimization failed (${res.status}): ${text}`);
   }
 
-  return res.json();
+  // Read SSE stream
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  return new Promise((resolve, reject) => {
+    function pump() {
+      reader!.read().then(({ done, value }) => {
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+          buffer = processSSEBuffer(buffer, (eventType, data) => {
+            if (eventType === "progress") {
+              try {
+                const progress: ProgressEvent = JSON.parse(data);
+                onProgress?.(progress);
+              } catch { /* ignore parse errors */ }
+            } else if (eventType === "complete") {
+              try {
+                const result: OptimizeResult = JSON.parse(data);
+                resolve(result);
+              } catch (e) { reject(e); }
+            } else if (eventType === "error") {
+              try {
+                const err = JSON.parse(data);
+                reject(new Error(err.message || "Unknown error"));
+              } catch { reject(new Error("Unknown error")); }
+            }
+          });
+        }
+        if (done) return;
+        pump();
+      }).catch(reject);
+    }
+    pump();
+  });
+}
+
+/**
+ * Process SSE buffer, calling handler for each complete event.
+ * Returns the remaining (incomplete) portion of the buffer.
+ *
+ * SSE events are delimited by double newlines (\n\n). We accumulate
+ * the buffer until we have at least one complete event, process it,
+ * and keep the remainder.
+ */
+function processSSEBuffer(
+  buffer: string,
+  handle: (eventType: string, data: string) => void
+): string {
+  let idx = 0;
+  while (true) {
+    const eventEnd = buffer.indexOf("\n\n", idx);
+    if (eventEnd === -1) break;
+
+    const eventBlock = buffer.slice(idx, eventEnd);
+    idx = eventEnd + 2;
+
+    // Parse event block lines
+    let eventType = "";
+    let data = "";
+    for (const line of eventBlock.split("\n")) {
+      if (line.startsWith("event: ")) {
+        eventType = line.slice(7);
+      } else if (line.startsWith("data: ")) {
+        data += (data ? "\n" : "") + line.slice(6);
+      }
+    }
+
+    if (eventType && data) {
+      handle(eventType, data);
+    }
+  }
+
+  return buffer.slice(idx);
 }

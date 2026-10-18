@@ -1,21 +1,16 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const inter = Inter({
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
   title: "Typewriter Art",
-  description: "Convert photographs into typewriter art with multi-layer ASCII optimization",
+  description:
+    "Convert photographs into typewriter art with multi-layer ASCII optimization",
 };
 
 export default function RootLayout({
@@ -24,11 +19,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
-    >
-      <body className="min-h-full flex flex-col bg-gray-950 text-gray-100">
+    <html lang="en" className={`${inter.className} h-full antialiased`}>
+      <body className="h-full bg-gray-100 text-gray-800">
         <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>

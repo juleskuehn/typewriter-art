@@ -3,12 +3,14 @@
 //! Coordinates the full optimization pipeline:
 //! charset loading → target preprocessing → layer optimization loops → final output.
 
+use std::sync::mpsc;
 use std::time::Instant;
 
 use ndarray::Axis;
 use rand::seq::SliceRandom;
 
 use crate::charset::{prep_charset, LoadedCharset};
+use crate::export::image_to_base64_png;
 use crate::layers::{fractional_to_pixel, load_layer_configs};
 use crate::render::{combine_layers, compute_background, render_all_layers, render_layer};
 use crate::resize::resize_target;
@@ -18,8 +20,38 @@ use crate::types::{
     OptimizeResult, Stats,
 };
 
+/// Progress event emitted during optimization (for streaming).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProgressEvent {
+    pub loop_num: usize,
+    pub num_loops: usize,
+    pub layer_num: usize,
+    pub num_layers: usize,
+    pub error: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mockup_b64: Option<String>,
+}
+
 /// Run the full optimization pipeline.
-pub fn optimize(config: OptimizeConfig) -> anyhow::Result<OptimizeResult> {
+pub fn optimize(
+    config: OptimizeConfig,
+) -> anyhow::Result<OptimizeResult> {
+    optimize_inner(config, None)
+}
+
+/// Run optimization with optional progress streaming.
+/// If `progress_tx` is provided, a ProgressEvent is sent after each layer pass.
+pub fn optimize_with_progress(
+    config: OptimizeConfig,
+    progress_tx: mpsc::Sender<ProgressEvent>,
+) -> anyhow::Result<OptimizeResult> {
+    optimize_inner(config, Some(progress_tx))
+}
+
+fn optimize_inner(
+    config: OptimizeConfig,
+    progress_tx: Option<mpsc::Sender<ProgressEvent>>,
+) -> anyhow::Result<OptimizeResult> {
     let start = Instant::now();
 
     // Load charset
@@ -223,6 +255,23 @@ pub fn optimize(config: OptimizeConfig) -> anyhow::Result<OptimizeResult> {
 
             total_comparisons += comparisons;
             error_over_time.push(mean_err);
+
+            // Emit progress event if streaming (mockup only on first layer of each loop)
+            if let Some(ref tx) = progress_tx {
+                let mockup_b64 = if layer_num == 0 {
+                    image_to_base64_png(&mockup).ok()
+                } else {
+                    None
+                };
+                let _ = tx.send(ProgressEvent {
+                    loop_num: loop_num + 1,
+                    num_loops,
+                    layer_num: layer_num + 1,
+                    num_layers,
+                    error: mean_err,
+                    mockup_b64,
+                });
+            }
 
             log::debug!(
                 "Loop {}/{}, layer {}/{} (offset {:?}): err={:.6}, comps={}",

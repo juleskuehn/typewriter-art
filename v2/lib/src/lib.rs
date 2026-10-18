@@ -55,7 +55,7 @@ pub mod search;
 pub mod types;
 
 // Re-export main public API
-pub use optimize::optimize;
+pub use optimize::{optimize, optimize_with_progress, ProgressEvent};
 pub use types::{
     CharsetConfig, InitMode, OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
 };

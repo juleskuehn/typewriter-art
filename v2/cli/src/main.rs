@@ -4,9 +4,11 @@
 //! Supports `--json` mode for web server integration.
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 use clap::Parser;
-use typewriter_art::{build_json_result, optimize, export, InitMode, OptimizeConfig, SearchAlgorithm};
+use typewriter_art::{build_json_result, optimize, optimize_with_progress, export, InitMode, OptimizeConfig, SearchAlgorithm};
 
 fn parse_search(s: &str) -> Result<SearchAlgorithm, String> {
     match s.to_lowercase().as_str() {
@@ -101,11 +103,19 @@ struct Args {
     /// When set, all log messages go to stderr; only the JSON goes to stdout.
     #[arg(long = "json", default_value = "false")]
     json: bool,
+
+    /// Stream progress as NDJSON lines to stdout (for SSE integration).
+    /// Each line is a JSON object: {"type":"progress","loop":1,"layer":3,"error":0.042,"mockup_b64":"..."}
+    /// Implies --json.
+    #[arg(long = "stream", default_value = "false")]
+    stream: bool,
 }
 
 fn main() -> anyhow::Result<()> {
-    // In JSON mode, send logs to stderr to keep stdout clean
-    let log_target = if std::env::args().any(|a| a == "--json") {
+    let args = Args::parse();
+
+    // In JSON or stream mode, send logs to stderr
+    let log_target = if args.json || args.stream {
         env_logger::Target::Stderr
     } else {
         env_logger::Target::Stdout
@@ -115,8 +125,6 @@ fn main() -> anyhow::Result<()> {
         .format_timestamp_millis()
         .target(log_target)
         .init();
-
-    let args = Args::parse();
 
     // Determine output directory
     let results_dir = if let Some(ref dir) = args.out_dir {
@@ -140,7 +148,7 @@ fn main() -> anyhow::Result<()> {
         out_file: results_dir.join("final.png").to_string_lossy().to_string(),
     };
 
-    if !args.json {
+    if !args.json && !args.stream {
         log::info!("Starting optimization...");
         log::info!("  charset: {}", config.charset);
         log::info!("  target: {}", config.target);
@@ -151,7 +159,27 @@ fn main() -> anyhow::Result<()> {
         log::info!("  init_mode: {}", format_init_mode(&config.init_mode));
     }
 
-    let result = optimize(config.clone())?;
+    let result = if args.stream {
+        // Set up streaming channel
+        let (tx, rx) = mpsc::channel::<typewriter_art::ProgressEvent>();
+
+        // Spawn a thread to print NDJSON lines as they arrive
+        let stream_thread = thread::spawn(move || {
+            for event in rx {
+                let json_line = serde_json::to_string(&event).unwrap_or_default();
+                println!("{}", json_line);
+            }
+        });
+
+        let result = optimize_with_progress(config.clone(), tx)?;
+
+        // Wait for the stream thread to finish printing
+        stream_thread.join().unwrap();
+
+        result
+    } else {
+        optimize(config.clone())?
+    };
 
     // Save results to disk (always, so they're available for download)
     std::fs::create_dir_all(&results_dir)?;
@@ -161,11 +189,14 @@ fn main() -> anyhow::Result<()> {
     export::save_stats(&result, &results_dir.join("stats.txt"))?;
     export::save_error_over_time(&result, &results_dir.join("error_over_time.csv"))?;
 
-    if args.json {
-        // Output JSON result to stdout
+    if args.json || args.stream {
+        // Output final JSON result to stdout
         let json_result = build_json_result(&result)?;
-        let json_str = serde_json::to_string(&json_result)?;
-        println!("{}", json_str);
+        let final_event = serde_json::json!({
+            "type": "complete",
+            "result": json_result
+        });
+        println!("{}", serde_json::to_string(&final_event)?);
     } else {
         // Human-readable output
         println!(

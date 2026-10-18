@@ -2,3 +2,4 @@
 *.ann*
 __pycache__
 *.DS_Store
+*/uploads/*

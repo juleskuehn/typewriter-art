@@ -35,14 +35,23 @@ export interface OptimizeResult {
   choices: ChoicesGrid;
 }
 
-/** State machine for the optimizer. */
-export type OptimizerState =
-  | { phase: "idle" }
-  | { phase: "uploading"; file: File }
-  | { phase: "configuring"; imageDataUrl: string }
-  | { phase: "optimizing"; imageDataUrl: string }
-  | { phase: "complete"; imageDataUrl: string; result: OptimizeResult }
-  | { phase: "error"; message: string };
+/** A single item in the image history (persisted to localStorage). */
+export interface HistoryItem {
+  id: string;
+  /** Small thumbnail (resized, ~200px wide, base64 PNG) */
+  thumbnail: string;
+  /** Full-resolution image data URL */
+  imageDataUrl: string;
+  /** The config last used for this image */
+  config: OptimizeConfig;
+  /** The optimization result, if one exists */
+  result: OptimizeResult | null;
+  /** When this image was added/last modified */
+  timestamp: number;
+}
+
+/** Center pane tab selection */
+export type CenterTab = "input" | "output" | "layers";
 
 /** Default configuration. */
 export const DEFAULT_CONFIG: OptimizeConfig = {
