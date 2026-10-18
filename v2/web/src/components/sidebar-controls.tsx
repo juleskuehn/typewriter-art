@@ -169,7 +169,7 @@ export function SidebarControls() {
         <label className="flex items-center gap-2 text-xs text-gray-600">
           <input
             type="checkbox"
-            checked={config.align_enabled}
+            checked={config.align_enabled ?? true}
             onChange={(e) => setConfig("align_enabled", e.target.checked)}
             disabled={busy}
             className="rounded"
@@ -181,9 +181,9 @@ export function SidebarControls() {
         <label className="flex items-center gap-2 text-xs text-gray-600">
           <input
             type="checkbox"
-            checked={config.align_deluxe}
+            checked={config.align_deluxe ?? false}
             onChange={(e) => setConfig("align_deluxe", e.target.checked)}
-            disabled={busy || config.align_enabled === false}
+            disabled={busy || (config.align_enabled ?? true) === false}
             className="rounded"
           />
           Deluxe (deep-rerank top crops)
@@ -252,7 +252,7 @@ export function SidebarControls() {
             <label className="flex items-center gap-2 text-xs text-gray-600">
               <input
                 type="checkbox"
-                checked={config.shuffle}
+                checked={config.shuffle ?? true}
                 onChange={(e) => setConfig("shuffle", e.target.checked)}
                 disabled={busy}
                 className="rounded"

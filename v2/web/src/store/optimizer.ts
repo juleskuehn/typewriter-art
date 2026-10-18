@@ -163,7 +163,10 @@ function normalizeItem(raw: unknown): HistoryItem | null {
     // Display only — `sourceImageLost` blocks re-optimizing a fallback.
     imageDataUrl: imageDataUrl ?? thumbnail,
     sourceImageLost: degraded || item.sourceImageLost === true,
-    config: item.config ?? { ...DEFAULT_CONFIG },
+    // Merge over the defaults: entries persisted by older builds lack fields
+    // added since (e.g. `align_deluxe`), and a `checked={undefined}` input
+    // flips from uncontrolled to controlled on first click (React warning).
+    config: { ...DEFAULT_CONFIG, ...(item.config ?? {}) },
     result,
     timestamp: typeof item.timestamp === "number" ? item.timestamp : 0,
   };
