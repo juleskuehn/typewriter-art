@@ -16,7 +16,7 @@ use crate::export::image_to_base64_png;
 use crate::layers::{fractional_to_pixel, load_layer_configs};
 use crate::render::{combine_layers, compute_background, render_all_layers, render_layer};
 use crate::resize::resize_target;
-use crate::search::optimize_layer_pass;
+use crate::search::{asymmetric_mse, optimize_layer_pass};
 use crate::types::{
     AlignmentResult, AlignmentScore, Chars, CharShape, FractionalOffset, Image, InitMode,
     LayerOffset, Layers, OptimizeConfig, OptimizeResult, Padding, Stats,
@@ -223,6 +223,9 @@ fn optimize_inner(
                 0,
                 None,
             );
+            // Score (and continue) the best state this candidate reached —
+            // with SA the last pass need not be the best one.
+            cand_state.restore_best(&chars, num_cols, &layer_offsets, out_shape);
             let (score, psnr, ssim) = align::score_mockup(
                 &cand_target,
                 &cand_state.mockup,
@@ -308,8 +311,17 @@ fn optimize_inner(
         progress_tx.as_ref(),
     );
 
+    // Simulated annealing accepts worse moves, so the last state is not
+    // necessarily the best one: return the best state seen anywhere in the run
+    // (including the rerank continuation). `error_over_time` keeps the true
+    // trajectory; the returned art is its minimum point.
+    state.restore_best(&chars, num_cols, &layer_offsets, out_shape);
     let elapsed = start.elapsed();
-    let final_error = state.error_over_time.last().copied().unwrap_or(0.0);
+    let final_error = if state.best_error.is_finite() {
+        state.best_error
+    } else {
+        0.0
+    };
 
     Ok(OptimizeResult {
         mockup: state.mockup,
@@ -338,6 +350,29 @@ struct RunState {
     mockup: Image,
     error_over_time: Vec<f32>,
     total_comparisons: u64,
+    /// Best state seen anywhere in the run, measured by the error of the full
+    /// state after each pass. Simulated annealing accepts worse moves, so the
+    /// last state is not necessarily the best one — the result is restored
+    /// from this snapshot at the end.
+    best_choices: ndarray::Array2<u16>,
+    best_error: f32,
+}
+
+impl RunState {
+    /// Swap in the best state seen so far: re-render the layers and mockup
+    /// from `best_choices` so the whole state is consistent again.
+    fn restore_best(
+        &mut self,
+        chars: &Chars,
+        num_cols: usize,
+        layer_offsets: &[LayerOffset],
+        out_shape: (usize, usize),
+    ) {
+        self.choices.assign(&self.best_choices);
+        self.layers =
+            render_all_layers(&self.best_choices, chars, num_cols, layer_offsets, out_shape);
+        self.mockup = combine_layers(&self.layers);
+    }
 }
 
 /// Pad a target to the output shape (white = 1.0) for layer offsets.
@@ -384,12 +419,15 @@ fn init_state(
         )
     };
 
+    let best_choices = choices.clone();
     RunState {
         layers,
         choices,
         mockup,
         error_over_time: Vec::new(),
         total_comparisons: 0,
+        best_choices,
+        best_error: f32::INFINITY,
     }
 }
 
@@ -423,6 +461,18 @@ fn run_loops(
         .map(|s| rand::rngs::StdRng::seed_from_u64(s.wrapping_add(loops_done as u64)))
         .unwrap_or_else(rand::rngs::StdRng::from_entropy);
 
+    // The starting state is also a candidate: with SA the very first pass can
+    // accept a worse move, so "best seen" must include the initialization.
+    if !state.best_error.is_finite() {
+        state.best_error = asymmetric_mse(
+            target_padded,
+            &state.mockup,
+            config.asymmetry,
+            loss_weights,
+        );
+        state.best_choices.assign(&state.choices);
+    }
+
     for i in 0..loops_to_run {
         let loop_num = loops_done + i;
         let temperature = if config.init_temp > 0.0 {
@@ -448,7 +498,7 @@ fn run_loops(
             });
 
             // Run optimization pass
-            let (comparisons, mean_err) = optimize_layer_pass(
+            let (comparisons, cell_err) = optimize_layer_pass(
                 &bg,
                 &mut state.mockup,
                 target_padded,
@@ -484,8 +534,23 @@ fn run_loops(
             // Update mockup
             state.mockup = combine_layers(&state.layers);
 
+            // Error of the full state after this pass. The trajectory
+            // (`error_over_time`, the progress chart) and the best-seen
+            // tracking share this one measure, so the returned artwork is
+            // exactly the minimum of the plotted curve.
+            let state_error = asymmetric_mse(
+                target_padded,
+                &state.mockup,
+                config.asymmetry,
+                loss_weights,
+            );
+            if state_error < state.best_error {
+                state.best_error = state_error;
+                state.best_choices.assign(&state.choices);
+            }
+
             state.total_comparisons += comparisons;
-            state.error_over_time.push(mean_err);
+            state.error_over_time.push(state_error);
 
             // Emit progress event if streaming (mockup only on first layer of each loop)
             if let Some(tx) = progress_tx {
@@ -499,19 +564,20 @@ fn run_loops(
                     num_loops: config.num_loops as usize,
                     layer_num: layer_num + 1,
                     num_layers,
-                    error: mean_err,
+                    error: state_error,
                     mockup_b64,
                 });
             }
 
             log::debug!(
-                "Loop {}/{}, layer {}/{} (offset {:?}): err={:.6}, comps={}",
+                "Loop {}/{}, layer {}/{} (offset {:?}): err={:.6} (cell {:.6}), comps={}",
                 loop_num + 1,
                 config.num_loops,
                 layer_num + 1,
                 num_layers,
                 layer_offset,
-                mean_err,
+                state_error,
+                cell_err,
                 comparisons,
             );
         }
@@ -641,4 +707,156 @@ fn format_offsets(offsets: &[(f32, f32)]) -> String {
         .map(|(y, x)| format!("({:.2},{:.2})", y, x))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::asymmetric_mse;
+    use crate::types::SearchAlgorithm;
+    use ndarray::arr3;
+
+    fn test_chars() -> Chars {
+        // 3 chars: blank (all white), half-dark columns, all-dark.
+        arr3(&[
+            [[1.0, 1.0], [1.0, 1.0]],
+            [[1.0, 0.5], [1.0, 0.5]],
+            [[0.5, 0.5], [0.5, 0.5]],
+        ])
+    }
+
+    fn test_config() -> OptimizeConfig {
+        OptimizeConfig {
+            charset: String::new(),
+            target: String::new(),
+            layers: "1x1".to_string(),
+            row_length: 2,
+            num_loops: 1,
+            init_mode: InitMode::Blank,
+            asymmetry: 0.1,
+            center_focus: crate::types::CenterFocus::Off,
+            seed: Some(1),
+            search: SearchAlgorithm::Greedy,
+            init_temp: 0.0,
+            shuffle: false,
+            out_file: String::new(),
+            align: crate::types::AlignConfig::default(),
+            align_override: None,
+        }
+    }
+
+    /// With SA at a huge temperature nearly any move is accepted, so late
+    /// passes can easily be worse than earlier ones. The run must return the
+    /// best state it saw, not the last one.
+    #[test]
+    fn test_returns_best_seen_state_not_last() {
+        let chars = test_chars();
+        // 2x2 grid of 2x2 cells.
+        let target = ndarray::arr2(&[
+            [0.2f32, 0.4, 0.6, 0.8],
+            [0.9, 0.1, 0.3, 0.5],
+            [0.7, 0.2, 0.4, 0.6],
+            [0.1, 0.8, 0.3, 0.9],
+        ]);
+        let layer_offsets: Vec<LayerOffset> = vec![(0, 0)];
+        let num_cols = 2;
+        let num_positions = 4;
+        let out_shape = (target.nrows(), target.ncols());
+        let config = OptimizeConfig {
+            num_loops: 6,
+            init_mode: InitMode::Random,
+            init_temp: 1.0e9,
+            search: SearchAlgorithm::SimAnneal,
+            seed: Some(11),
+            ..test_config()
+        };
+
+        let mut state = init_state(
+            &target,
+            &chars,
+            &layer_offsets,
+            num_cols,
+            num_positions,
+            &config,
+        );
+        run_loops(
+            &mut state,
+            &target,
+            &chars,
+            &layer_offsets,
+            None,
+            num_cols,
+            &config,
+            config.num_loops,
+            0,
+            None,
+        );
+        state.restore_best(&chars, num_cols, &layer_offsets, out_shape);
+
+        // The returned state is consistent with the tracked best…
+        let restored_err = asymmetric_mse(&target, &state.mockup, config.asymmetry, None);
+        assert!((restored_err - state.best_error).abs() < 1e-6);
+        assert_eq!(&state.choices, &state.best_choices);
+        // …it is at least as good as any pass on the plotted curve…
+        let min_pass = state
+            .error_over_time
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        assert!(state.best_error <= min_pass + 1e-7);
+        // …and this seeded run really does end above its best (regression
+        // guard: without best-state restore, final_error == last pass).
+        assert!(
+            state.best_error < *state.error_over_time.last().unwrap(),
+            "expected the seeded SA run to end above its best pass"
+        );
+    }
+
+    /// The starting state is a candidate too: if every pass is a regression,
+    /// the initialization must win.
+    #[test]
+    fn test_best_can_be_the_initial_state() {
+        let chars = test_chars();
+        // A target the blank init matches exactly (all white).
+        let target = Image::from_elem((4, 4), 1.0f32);
+        let layer_offsets: Vec<LayerOffset> = vec![(0, 0)];
+        let num_cols = 2;
+        let config = OptimizeConfig {
+            num_loops: 2,
+            init_mode: InitMode::Blank,
+            init_temp: 1.0e9,
+            search: SearchAlgorithm::SimAnneal,
+            seed: Some(3),
+            ..test_config()
+        };
+
+        let mut state = init_state(&target, &chars, &layer_offsets, num_cols, 4, &config);
+        let init_error =
+            asymmetric_mse(&target, &state.mockup, config.asymmetry, None);
+        assert_eq!(init_error, 0.0);
+
+        run_loops(
+            &mut state,
+            &target,
+            &chars,
+            &layer_offsets,
+            None,
+            num_cols,
+            &config,
+            config.num_loops,
+            0,
+            None,
+        );
+        state.restore_best(&chars, num_cols, &layer_offsets, (4, 4));
+
+        assert_eq!(state.best_error, 0.0);
+        assert_eq!(&state.choices, &state.best_choices);
+        // Everything the passes did was a regression from the init.
+        assert!(
+            state
+                .error_over_time
+                .iter()
+                .all(|&e| e >= state.best_error)
+        );
+    }
 }

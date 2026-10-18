@@ -282,19 +282,24 @@ pub struct OptimizeConfig {
 pub struct Stats {
     pub total_time_ns: u64,
     pub total_comparisons: u64,
+    /// Error of the returned (best-seen) state — the minimum of
+    /// [`OptimizeResult::error_over_time`].
     pub final_error: f32,
 }
 
 /// Complete optimization result.
 #[derive(Debug, Clone)]
 pub struct OptimizeResult {
-    /// Final mockup image.
+    /// Mockup of the best state seen anywhere in the run. Simulated annealing
+    /// accepts worse moves, so this need not be the state after the last pass.
     pub mockup: Image,
-    /// Individual layer images.
+    /// Individual layer images (of the returned best state).
     pub layers: Layers,
-    /// Character assignments per layer.
+    /// Character assignments per layer (the best state seen).
     pub choices: Choices,
-    /// Error value after each layer pass.
+    /// Error of the full state after each layer pass. This is the true
+    /// trajectory (SA can make it rise); the returned artwork is the state at
+    /// its minimum point.
     pub error_over_time: Vec<f32>,
     /// Optimization statistics.
     pub stats: Stats,

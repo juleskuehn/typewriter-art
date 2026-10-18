@@ -120,6 +120,20 @@ SSIM by 4 (v1: `ssim + psnr`), the quick pass is an exact greedy pass instead
 of ANN-assisted placement, and the winner is applied automatically instead of
 requiring a manual re-run.
 
+## Best-state restore
+
+Simulated annealing accepts worse moves, so the last pass of a run is not
+necessarily its best one. The run therefore tracks the best state seen
+anywhere — including the initialization — and restores it at the end: the
+returned artwork is the minimum of the `error_over_time` curve, and
+`stats.final_error` is its error. Each deluxe-rerank candidate is scored (and
+the winner continues) from its own best state too.
+
+`error_over_time` records the error of the *full state* after each layer pass
+(a deliberate change from v1, which recorded the per-pass mean cell error), so
+the curve is directly comparable across passes of different layers and its
+minimum is exactly the returned artwork. v1 returns the last state instead.
+
 ## Center Focus
 
 `--center-focus off|soft|strong` (same toggle in the web UI) weights both the
