@@ -9,7 +9,8 @@ use std::sync::mpsc;use std::thread;
 use clap::Parser;
 use typewriter_art::{
     align_search, build_json_result, export, optimize, optimize_with_progress, AlignConfig,
-    CenterFocus, CropTransform, InitMode, InkFloor, OptimizeConfig, SearchAlgorithm,
+    CenterFocus, CropTransform, DitherConfig, DitherMark, DitherMode, InitMode, InkFloor,
+    OptimizeConfig, SearchAlgorithm,
 };
 
 fn parse_search(s: &str) -> Result<SearchAlgorithm, String> {
@@ -58,6 +59,29 @@ fn parse_ink_floor(s: &str) -> Result<InkFloor, String> {
             s
         )
     })
+}
+
+fn parse_dither(s: &str) -> Result<DitherMode, String> {
+    match s.to_lowercase().as_str() {
+        "none" | "off" => Ok(DitherMode::None),
+        "bayer4" | "bayer" | "ordered4" => Ok(DitherMode::Bayer4),
+        "bayer8" | "ordered8" => Ok(DitherMode::Bayer8),
+        "bluenoise" | "blue" | "bn" => Ok(DitherMode::BlueNoise),
+        "fs" | "floyd" | "floyd-steinberg" | "floydsteinberg" => Ok(DitherMode::FloydSteinberg),
+        _ => Err(format!(
+            "Invalid dither '{}'. Use 'none', 'bayer4', 'bayer8', 'bluenoise' or 'fs'",
+            s
+        )),
+    }
+}
+
+fn parse_dither_mark(s: &str) -> Result<DitherMark, String> {
+    if matches!(s.to_lowercase().as_str(), "auto" | "a") {
+        return Ok(DitherMark::Auto);
+    }
+    s.parse::<u16>()
+        .map(DitherMark::Char)
+        .map_err(|_| format!("Invalid dither mark '{}'. Use 'auto' or a glyph index", s))
 }
 
 fn format_search(s: &SearchAlgorithm) -> String {
@@ -112,6 +136,24 @@ struct Args {
     /// give a brightness value (advanced)
     #[arg(long = "ink-floor", default_value = "auto", value_parser = parse_ink_floor)]
     ink_floor: InkFloor,
+
+    /// Dithering pattern for light tones (advanced):
+    /// none | bayer4 | bayer8 | bluenoise | fs
+    #[arg(long = "dither", default_value = "none", value_parser = parse_dither)]
+    dither: DitherMode,
+
+    /// Dither light band: only cells whose target ink density is at most this
+    /// fraction are dithered (advanced)
+    #[arg(long = "dither-band", default_value = "0.15")]
+    dither_band: f32,
+
+    /// Dither flip refinement passes after seeding, 0 = seed only (advanced)
+    #[arg(long = "dither-refine", default_value = "2")]
+    dither_refine: u32,
+
+    /// Dither mark: 'auto' (lightest glyph) or a glyph index (advanced)
+    #[arg(long = "dither-mark", default_value = "auto", value_parser = parse_dither_mark)]
+    dither_mark: DitherMark,
 
     /// Search algorithm: simAnneal or greedy
     #[arg(short = 's', long, default_value = "simAnneal", value_parser = parse_search)]
@@ -266,6 +308,12 @@ fn main() -> anyhow::Result<()> {
         asymmetry: args.asymmetry,
         center_focus: args.center_focus,
         ink_floor: args.ink_floor,
+        dither: DitherConfig {
+            mode: args.dither,
+            band_max: args.dither_band.clamp(0.0, 1.0),
+            refine_passes: args.dither_refine,
+            mark: args.dither_mark,
+        },
         search: args.search,
         init_temp: args.init_temp,
         shuffle: !args.no_shuffle,

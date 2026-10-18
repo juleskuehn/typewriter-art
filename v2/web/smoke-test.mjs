@@ -33,6 +33,9 @@ const config = {
   align_deluxe: true,
   center_focus: "soft",
   ink_floor: "auto",
+  dither_mode: "bayer4",
+  dither_band: 0.15,
+  dither_refine: 2,
 };
 
 // 2. Run through the real client SSE code

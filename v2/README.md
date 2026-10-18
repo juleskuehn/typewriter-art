@@ -158,6 +158,41 @@ pixels the typewriter cannot print; with `auto` (f = 0.114) not a single
 pixel goes below the floor. See `ink-and-dither-plan.md` for the model
 derivation and a calibration worksheet plan.
 
+## Dither (advanced)
+
+Pointwise MSE cannot dither: for a tile at 4 % ink, blank beats scattering
+the lightest mark by ~8× even though the scattered pattern matches the tone —
+the benefit of dithering lives in the *local mean*, which the per-cell
+objective never sees. Light gradients quantize to whole glyphs and flatten.
+
+`--dither none|bayer4|bayer8|bluenoise|fs` (default `none`; web UI: Advanced →
+Dither) adds a finishing stage on top of the optimization loops:
+
+1. **Seeding** — in the light band (`--dither-band`, default: target ink
+   density ≤ 0.15), each blank cell's residual ink demand is thresholded
+   against the chosen screen — or error-diffused for `fs` — to scatter the
+   lightest glyph (`--dither-mark`, default `auto`).
+2. **Flip refinement** — greedy passes (`--dither-refine`, default 2) flip
+   band cells between blank and the mark whenever that lowers the *blurred*
+   error (~1.5 char cells). This settles the local density to the target tone
+   and arbitrates overlaps between layers; flips are allowed on any band cell,
+   because the optimizer quantizes light tones to whole glyphs and only this
+   stage can move ink between cells. Detail is protected by the band itself:
+   cells whose target tile carries more ink stay out of it.
+
+Dark areas are untouched by design — overlap is their tone control, and the
+ink floor keeps it honest. Measured on a light ramp (0.03 → 0.13 ink): the
+low-frequency error dropped 100× and the final error halved; on mwdog the
+low-frequency error halved for a ~4 % pointwise trade in the light band.
+`stats.final_error` describes the returned (dithered) art;
+`error_over_time` still shows the optimization loops' trajectory.
+
+Deliberate deviation: the paper's answer to light tones is strike-force
+variation; the scans already carry two weights, and dithering adds spatial
+tone where even the lightest weight is too heavy. Ordered screens (bayer) are
+the easiest to follow when typing the result by hand; blue noise and
+Floyd–Steinberg look more organic.
+
 ## Center Focus
 
 `--center-focus off|soft|strong` (same toggle in the web UI) weights both the

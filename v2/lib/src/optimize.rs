@@ -18,8 +18,8 @@ use crate::render::{Ink, combine_layers, compute_background, render_all_layers, 
 use crate::resize::resize_target;
 use crate::search::{asymmetric_mse, optimize_layer_pass};
 use crate::types::{
-    AlignmentResult, AlignmentScore, Chars, CharShape, FractionalOffset, Image, InitMode,
-    LayerOffset, Layers, OptimizeConfig, OptimizeResult, Padding, Stats,
+    AlignmentResult, AlignmentScore, Chars, CharShape, DitherMode, FractionalOffset, Image,
+    InitMode, LayerOffset, Layers, OptimizeConfig, OptimizeResult, Padding, Stats,
 };
 
 /// Progress event emitted during optimization (for streaming).
@@ -321,12 +321,41 @@ fn optimize_inner(
     // (including the rerank continuation). `error_over_time` keeps the true
     // trajectory; the returned art is its minimum point.
     state.restore_best(&ink, &chars, num_cols, &layer_offsets, out_shape);
+
+    // Dither finishing stage (advanced): light-tone texture. It trades a
+    // little pointwise error for low-frequency fidelity, so `final_error` is
+    // recomputed from the returned art below.
+    if config.dither.mode != DitherMode::None {
+        let dither_stats = crate::dither::run(
+            &mut state.mockup,
+            &mut state.choices,
+            &mut state.layers,
+            &target_padded,
+            &chars,
+            &ink,
+            &layer_offsets,
+            num_cols,
+            &config.dither,
+        );
+        log::info!(
+            "Dither: seeded {} marks, accepted {} flips, LF error {:.6} → {:.6}",
+            dither_stats.seeded,
+            dither_stats.flipped,
+            dither_stats.lf_before,
+            dither_stats.lf_after
+        );
+    }
+
     let elapsed = start.elapsed();
-    let final_error = if state.best_error.is_finite() {
-        state.best_error
-    } else {
-        0.0
-    };
+    // Error of the returned artwork. Without dithering this is exactly the
+    // minimum of `error_over_time`; with dithering it describes the
+    // dither-refined art.
+    let final_error = asymmetric_mse(
+        &target_padded,
+        &state.mockup,
+        config.asymmetry,
+        loss_weights.as_ref(),
+    );
 
     Ok(OptimizeResult {
         mockup: state.mockup,
@@ -749,6 +778,7 @@ mod tests {
             asymmetry: 0.1,
             center_focus: crate::types::CenterFocus::Off,
             ink_floor: crate::types::InkFloor::Fixed(0.0),
+            dither: crate::types::DitherConfig::default(),
             seed: Some(1),
             search: SearchAlgorithm::Greedy,
             init_temp: 0.0,

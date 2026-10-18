@@ -15,7 +15,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useOptimizerStore, useActiveItem } from "@/store/optimizer";
-import { CHARSETS, LAYER_CONFIGS, CENTER_FOCUSES } from "@/lib/types";
+import { CHARSETS, LAYER_CONFIGS, CENTER_FOCUSES, type OptimizeConfig } from "@/lib/types";
 import { Settings2, ChevronDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 
@@ -300,6 +300,56 @@ export function SidebarControls() {
                   min={0} max={0.5} step={0.01}
                   disabled={busy}
                 />
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-gray-500">Dither (light tones)</label>
+              <Select
+                value={config.dither_mode ?? "none"}
+                onValueChange={(v) =>
+                  setConfig("dither_mode", v as OptimizeConfig["dither_mode"])
+                }
+                disabled={busy}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Off</SelectItem>
+                  <SelectItem value="bayer4">Bayer 4×4 (regular)</SelectItem>
+                  <SelectItem value="bayer8">Bayer 8×8</SelectItem>
+                  <SelectItem value="bluenoise">Blue noise</SelectItem>
+                  <SelectItem value="fs">Floyd–Steinberg</SelectItem>
+                </SelectContent>
+              </Select>
+              {(config.dither_mode ?? "none") !== "none" && (
+                <>
+                  <div className="flex justify-between">
+                    <label className="text-xs text-gray-500">Light band ≤</label>
+                    <span className="text-xs text-gray-400">{(config.dither_band ?? 0.15).toFixed(2)}</span>
+                  </div>
+                  <Slider
+                    value={[config.dither_band ?? 0.15]}
+                    onValueChange={(v) =>
+                      setConfig("dither_band", Array.isArray(v) ? v[0] : (v as unknown as number))
+                    }
+                    min={0.02} max={0.4} step={0.01}
+                    disabled={busy}
+                  />
+                  <div className="flex justify-between">
+                    <label className="text-xs text-gray-500">Refine passes</label>
+                    <span className="text-xs text-gray-400">{config.dither_refine ?? 2}</span>
+                  </div>
+                  <Slider
+                    value={[config.dither_refine ?? 2]}
+                    onValueChange={(v) =>
+                      setConfig("dither_refine", Array.isArray(v) ? v[0] : (v as unknown as number))
+                    }
+                    min={0} max={4} step={1}
+                    disabled={busy}
+                  />
+                </>
               )}
             </div>
           </CollapsibleContent>

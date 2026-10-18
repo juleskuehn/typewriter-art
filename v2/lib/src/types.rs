@@ -256,6 +256,58 @@ pub enum InkFloor {
     Fixed(f32),
 }
 
+/// Dithering pattern for light tones (advanced option).
+///
+/// Dithering distributes sparse marks so their *local average* tracks the
+/// target tone — the way to render gradients lighter than the lightest
+/// glyph. See [`crate::dither`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DitherMode {
+    /// No dithering (default).
+    None,
+    /// Ordered dithering with a 4×4 Bayer screen (regular, easy to type).
+    Bayer4,
+    /// Ordered dithering with an 8×8 Bayer screen.
+    Bayer8,
+    /// Blue-noise screen (16×16 progressive farthest-point ranking).
+    BlueNoise,
+    /// Floyd–Steinberg error diffusion (organic, irregular texture).
+    FloydSteinberg,
+}
+
+/// Which glyph to scatter in the light band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DitherMark {
+    /// The lightest non-blank glyph in the charset (default).
+    Auto,
+    /// An explicit glyph index.
+    Char(u16),
+}
+
+/// Dithering configuration (advanced).
+#[derive(Debug, Clone, Copy)]
+pub struct DitherConfig {
+    pub mode: DitherMode,
+    /// Light band: only cells whose target ink density is at most this
+    /// fraction are dithered — dark areas get their tone from overstrikes.
+    pub band_max: f32,
+    /// Low-frequency flip refinement passes after seeding (0 = seed only).
+    pub refine_passes: u32,
+    /// The scattered mark.
+    pub mark: DitherMark,
+}
+
+impl Default for DitherConfig {
+    fn default() -> Self {
+        DitherConfig {
+            mode: DitherMode::None,
+            band_max: 0.15,
+            refine_passes: 2,
+            mark: DitherMark::Auto,
+        }
+    }
+}
+
 /// Complete optimization configuration.
 #[derive(Debug, Clone)]
 pub struct OptimizeConfig {
@@ -277,6 +329,8 @@ pub struct OptimizeConfig {
     pub center_focus: CenterFocus,
     /// Ink saturation floor (advanced): how dark overstriking can get.
     pub ink_floor: InkFloor,
+    /// Dithering for light tones (advanced).
+    pub dither: DitherConfig,
     /// RNG seed for reproducible runs (random init, SA decisions, layer
     /// shuffle). `None` = nondeterministic.
     pub seed: Option<u64>,
@@ -299,8 +353,10 @@ pub struct OptimizeConfig {
 pub struct Stats {
     pub total_time_ns: u64,
     pub total_comparisons: u64,
-    /// Error of the returned (best-seen) state — the minimum of
-    /// [`OptimizeResult::error_over_time`].
+    /// Error of the returned artwork. Without dithering this is the minimum of
+    /// [`OptimizeResult::error_over_time`] (the best state seen); with the
+    /// dither finishing stage it describes the dither-refined art, which
+    /// trades a little pointwise error for low-frequency fidelity.
     pub final_error: f32,
 }
 
@@ -316,7 +372,8 @@ pub struct OptimizeResult {
     pub choices: Choices,
     /// Error of the full state after each layer pass. This is the true
     /// trajectory (SA can make it rise); the returned artwork is the state at
-    /// its minimum point.
+    /// its minimum point, then refined by the dither finishing stage when
+    /// enabled.
     pub error_over_time: Vec<f32>,
     /// Optimization statistics.
     pub stats: Stats,

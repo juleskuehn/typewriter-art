@@ -5,6 +5,7 @@ Two quality improvements, aimed at opposite ends of the tonal range:
 1. **Saturating ink compositing** — overstrikes can't reach black (dark end)
    — **implemented** (advanced option: `--ink-floor`, web Advanced panel)
 2. **Dither options** — light tones need spatial tone, not just overlap (light end)
+   — **implemented** (advanced option: `--dither`, web Advanced panel)
 
 They partition the range cleanly: dark regions get their control from overlap
 (the new ceiling fixes its realism), light regions get dithering, the middle is

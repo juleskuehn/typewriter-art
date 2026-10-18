@@ -7,7 +7,7 @@
 //! ## Quick Usage
 //!
 //! ```rust,no_run
-//! use typewriter_art::{optimize, AlignConfig, CenterFocus, InitMode, InkFloor, OptimizeConfig, SearchAlgorithm};
+//! use typewriter_art::{optimize, AlignConfig, CenterFocus, DitherConfig, InitMode, InkFloor, OptimizeConfig, SearchAlgorithm};
 //!
 //! let config = OptimizeConfig {
 //!     charset: "hermes-sm".into(),
@@ -18,6 +18,7 @@
 //!     asymmetry: 0.1,
 //!     center_focus: CenterFocus::Soft,
 //!     ink_floor: InkFloor::Auto,
+//!     dither: DitherConfig::default(),
 //!     search: SearchAlgorithm::SimAnneal,
 //!     init_temp: 0.001,
 //!     layers: "4x2".into(),
@@ -53,6 +54,7 @@
 pub mod align;
 pub mod charset;
 pub mod chars;
+pub mod dither;
 pub mod export;
 pub mod layers;
 pub mod metrics;
@@ -67,6 +69,7 @@ pub mod weights;
 pub use optimize::{align_search, optimize, optimize_with_progress, ProgressEvent};
 pub use types::{
     AlignConfig, AlignmentResult, AlignmentScore, CenterFocus, CharsetConfig, CropTransform,
-    InitMode, InkFloor, OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
+    DitherConfig, DitherMark, DitherMode, InitMode, InkFloor, OptimizeConfig, OptimizeResult,
+    SearchAlgorithm, Stats,
 };
 pub use export::{build_json_result, image_to_base64_png, JsonResult};

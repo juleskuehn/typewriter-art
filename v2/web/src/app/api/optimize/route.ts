@@ -31,6 +31,9 @@ function buildArgs(config: OptimizeConfig, imagePath: string, outDir: string): s
   if (config.align_deluxe === true) args.push("--align-deluxe");
   args.push("--center-focus", config.center_focus ?? "soft");
   args.push("--ink-floor", config.ink_floor === undefined ? "auto" : String(config.ink_floor));
+  args.push("--dither", config.dither_mode ?? "none");
+  args.push("--dither-band", String(config.dither_band ?? 0.15));
+  args.push("--dither-refine", String(config.dither_refine ?? 2));
   return args;
 }
 

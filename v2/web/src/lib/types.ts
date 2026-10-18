@@ -7,6 +7,13 @@
  */
 export type InkFloor = "auto" | number;
 
+/**
+ * Dithering pattern for light tones (advanced option). Dithering distributes
+ * sparse marks so their local average tracks the target tone — the way to
+ * render gradients lighter than the lightest glyph.
+ */
+export type DitherMode = "none" | "bayer4" | "bayer8" | "bluenoise" | "fs";
+
 /** Configuration passed to the optimizer. */
 export interface OptimizeConfig {
   charset: string;
@@ -26,6 +33,12 @@ export interface OptimizeConfig {
   center_focus: "off" | "soft" | "strong";
   /** Ink saturation floor (advanced): "auto" or an explicit brightness value. */
   ink_floor: InkFloor;
+  /** Dithering pattern for light tones (advanced). */
+  dither_mode: DitherMode;
+  /** Dither light band: only cells whose target ink density is at most this. */
+  dither_band: number;
+  /** Dither flip refinement passes after seeding (0 = seed only). */
+  dither_refine: number;
 }
 
 /** Statistics from the optimizer. */
@@ -127,6 +140,9 @@ export const DEFAULT_CONFIG: OptimizeConfig = {
   align_deluxe: false,
   center_focus: "soft",
   ink_floor: "auto",
+  dither_mode: "none",
+  dither_band: 0.15,
+  dither_refine: 2,
 };
 
 /**
