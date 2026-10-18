@@ -1,5 +1,12 @@
 // TypeScript types matching the Rust optimizer types
 
+/**
+ * Ink saturation floor (advanced option): how dark overstriking can get.
+ * "auto" derives it from the charset scan (darkest glyph pixel = the ribbon's
+ * ink density); a number is an explicit brightness floor.
+ */
+export type InkFloor = "auto" | number;
+
 /** Configuration passed to the optimizer. */
 export interface OptimizeConfig {
   charset: string;
@@ -17,6 +24,8 @@ export interface OptimizeConfig {
   align_deluxe: boolean;
   /** Spatial weighting of the loss and alignment score ("center focus"). */
   center_focus: "off" | "soft" | "strong";
+  /** Ink saturation floor (advanced): "auto" or an explicit brightness value. */
+  ink_floor: InkFloor;
 }
 
 /** Statistics from the optimizer. */
@@ -117,6 +126,7 @@ export const DEFAULT_CONFIG: OptimizeConfig = {
   align_enabled: true,
   align_deluxe: false,
   center_focus: "soft",
+  ink_floor: "auto",
 };
 
 /**

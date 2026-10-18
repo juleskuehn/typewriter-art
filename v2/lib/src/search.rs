@@ -10,7 +10,8 @@ use rand::SeedableRng;
 use rayon::prelude::*;
 
 use crate::chars::evaluate_all_chars;
-use crate::types::{Chars, Image, SearchAlgorithm};
+use crate::render::Ink;
+use crate::types::{Image, SearchAlgorithm};
 
 /// Optimize all positions in a single layer pass.
 ///
@@ -35,7 +36,7 @@ pub fn optimize_layer_pass(
     bg: &Image,
     mockup: &mut Image,
     target: &Image,
-    chars: &Chars,
+    ink: &Ink,
     choices: &mut Array1<u16>,
     layer_offset: (usize, usize),
     asymmetry: f32,
@@ -45,9 +46,9 @@ pub fn optimize_layer_pass(
     rng_seed: u64,
 ) -> (u64, f32) {
     let num_positions = choices.len();
-    let num_cols = target.ncols() / chars.shape()[2];
-    let char_h = chars.shape()[1];
-    let char_w = chars.shape()[2];
+    let num_cols = target.ncols() / ink.chars_t.shape()[2];
+    let char_h = ink.chars_t.shape()[1];
+    let char_w = ink.chars_t.shape()[2];
 
     // Collect results per position in parallel
     let results: Vec<(u32, u16, f32, Image)> = (0..num_positions)
@@ -88,12 +89,12 @@ pub fn optimize_layer_pass(
 
             // Batch-evaluate all characters
             let all_mses =
-                evaluate_all_chars(&bg_slice, &target_slice, chars, asymmetry, weight_slice.as_ref());
+                evaluate_all_chars(&bg_slice, &target_slice, ink, asymmetry, weight_slice.as_ref());
 
             // Select character using search strategy
             let (new_choice, new_composite, comparisons) = match mode {
                 SearchAlgorithm::Greedy => {
-                    greedy_search(&all_mses, cur_amse, prev_choice, &bg_slice, chars)
+                    greedy_search(&all_mses, cur_amse, prev_choice, &bg_slice, ink)
                 }
                 SearchAlgorithm::SimAnneal => {
                     let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed.wrapping_add(i as u64));
@@ -102,7 +103,7 @@ pub fn optimize_layer_pass(
                         cur_amse,
                         prev_choice,
                         &bg_slice,
-                        chars,
+                        ink,
                         temperature,
                         &mut rng,
                     )
@@ -142,6 +143,7 @@ pub fn optimize_layer_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Chars, InkFloor};
     use ndarray::arr3;
 
     fn test_chars() -> Chars {
@@ -159,14 +161,15 @@ mod tests {
         // bg * char 1 matches the target exactly, so no candidate
         // should beat it and greedy must keep it (v1 parity).
         let chars = test_chars();
+        let ink = Ink::new(InkFloor::Fixed(0.0), &chars);
         let bg = Image::from_elem((2, 2), 1.0);
         let target = Image::from_shape_vec((2, 2), vec![1.0, 0.5, 1.0, 0.5]).unwrap();
 
-        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0, None);
+        let all_mses = evaluate_all_chars(&bg, &target, &ink, 0.0, None);
         let cur_amse = all_mses[1];
 
         let (choice, _composite, comparisons) =
-            greedy_search(&all_mses, cur_amse, 1, &bg, &chars);
+            greedy_search(&all_mses, cur_amse, 1, &bg, &ink);
         assert_eq!(choice, 1);
         assert_eq!(comparisons, 3);
     }
@@ -174,15 +177,16 @@ mod tests {
     #[test]
     fn test_greedy_switches_when_better() {
         let chars = test_chars();
+        let ink = Ink::new(InkFloor::Fixed(0.0), &chars);
         let bg = Image::from_elem((2, 2), 1.0);
         // Target matches char 2 (all 0.5)
         let target = Image::from_elem((2, 2), 0.5);
 
-        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0, None);
+        let all_mses = evaluate_all_chars(&bg, &target, &ink, 0.0, None);
         let cur_amse = all_mses[1];
 
         let (choice, _composite, _comparisons) =
-            greedy_search(&all_mses, cur_amse, 1, &bg, &chars);
+            greedy_search(&all_mses, cur_amse, 1, &bg, &ink);
         assert_eq!(choice, 2);
     }
 
@@ -191,14 +195,22 @@ mod tests {
         // With temperature 0, SA only accepts strict improvements.
         // Current char is best → all candidates examined, no switch.
         let chars = test_chars();
+        let ink = Ink::new(InkFloor::Fixed(0.0), &chars);
         let bg = Image::from_elem((2, 2), 1.0);
         let target = Image::from_shape_vec((2, 2), vec![1.0, 0.5, 1.0, 0.5]).unwrap();
 
-        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0, None);
+        let all_mses = evaluate_all_chars(&bg, &target, &ink, 0.0, None);
         let cur_amse = all_mses[1];
 
-        let (choice, _composite, comparisons) =
-            simulated_annealing(&all_mses, cur_amse, 1, &bg, &chars, 0.0, &mut rand::rngs::StdRng::seed_from_u64(1));
+        let (choice, _composite, comparisons) = simulated_annealing(
+            &all_mses,
+            cur_amse,
+            1,
+            &bg,
+            &ink,
+            0.0,
+            &mut rand::rngs::StdRng::seed_from_u64(1),
+        );
         assert_eq!(choice, 1);
         assert_eq!(comparisons, 3);
     }
@@ -206,6 +218,7 @@ mod tests {
     #[test]
     fn test_seeded_passes_are_reproducible() {
         let chars = test_chars();
+        let ink = Ink::new(InkFloor::Fixed(0.0), &chars);
         let bg = Image::from_elem((2, 2), 1.0);
         let target = Image::from_shape_vec((2, 2), vec![0.4, 0.5, 0.6, 0.5]).unwrap();
 
@@ -217,7 +230,7 @@ mod tests {
                 &bg,
                 &mut mockup,
                 &target,
-                &chars,
+                &ink,
                 &mut choices,
                 (0, 0),
                 0.1,
@@ -232,6 +245,13 @@ mod tests {
     }
 }
 
+/// Compose one character over a τ-space background into a brightness image
+/// (see [`Ink`]).
+fn build_composite(bg_t: &Image, ink: &Ink, idx: u16) -> Image {
+    let product = bg_t * &ink.chars_t.index_axis(Axis(0), idx as usize);
+    product.mapv(|t| ink.from_tau(t))
+}
+
 /// Greedy search: pick the character with the lowest MSE.
 ///
 /// Port of v1 semantics: only switch away from the current character when a
@@ -243,9 +263,9 @@ pub fn greedy_search(
     cur_amse: f32,
     prev_choice: u16,
     bg_slice: &Image,
-    chars: &Chars,
+    ink: &Ink,
 ) -> (u16, Image, u32) {
-    let num_chars = chars.shape()[0] as u16;
+    let num_chars = ink.chars_t.shape()[0] as u16;
     let mut best_idx = prev_choice;
     let mut best_mse = cur_amse;
     let mut comparisons: u32 = 0;
@@ -262,8 +282,8 @@ pub fn greedy_search(
         }
     }
 
-    let composite = bg_slice * &chars.index_axis(Axis(0), best_idx as usize);
-    (best_idx, composite.to_owned(), comparisons)
+    let composite = build_composite(bg_slice, ink, best_idx);
+    (best_idx, composite, comparisons)
 }
 
 /// Simulated annealing search with random candidate evaluation order.
@@ -278,11 +298,11 @@ pub fn simulated_annealing(
     cur_amse: f32,
     prev_choice: u16,
     bg_slice: &Image,
-    chars: &Chars,
+    ink: &Ink,
     temperature: f32,
     rng: &mut (impl rand::Rng + ?Sized),
 ) -> (u16, Image, u32) {
-    let num_chars = chars.shape()[0] as u16;
+    let num_chars = ink.chars_t.shape()[0] as u16;
 
     // Generate random permutation of character indices
     let mut indices: Vec<u16> = (0..num_chars).collect();
@@ -302,22 +322,22 @@ pub fn simulated_annealing(
 
         // Always accept improvements
         if delta > 0.0 {
-            let composite = bg_slice * &chars.index_axis(Axis(0), new_idx as usize);
-            return (new_idx, composite.to_owned(), comparisons);
+            let composite = build_composite(bg_slice, ink, new_idx);
+            return (new_idx, composite, comparisons);
         }
 
         // Probabilistically accept worse moves (SA)
         if temperature > 0.0 {
             let acceptance_prob = (delta / temperature).exp();
             if acceptance_prob > rng.gen::<f32>() {
-                let composite = bg_slice * &chars.index_axis(Axis(0), new_idx as usize);
-                return (new_idx, composite.to_owned(), comparisons);
+                let composite = build_composite(bg_slice, ink, new_idx);
+                return (new_idx, composite, comparisons);
             }
         }
     }
 
     // No replacement found — keep current character
-    let composite = bg_slice * &chars.index_axis(Axis(0), prev_choice as usize);
+    let composite = build_composite(bg_slice, ink, prev_choice);
     (prev_choice, composite.to_owned(), comparisons)
 }
 

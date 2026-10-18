@@ -14,7 +14,7 @@ use crate::align;
 use crate::charset::{prep_charset, LoadedCharset};
 use crate::export::image_to_base64_png;
 use crate::layers::{fractional_to_pixel, load_layer_configs};
-use crate::render::{combine_layers, compute_background, render_all_layers, render_layer};
+use crate::render::{Ink, combine_layers, compute_background, render_all_layers, render_layer};
 use crate::resize::resize_target;
 use crate::search::{asymmetric_mse, optimize_layer_pass};
 use crate::types::{
@@ -72,6 +72,7 @@ fn optimize_inner(
 
     let PreparedInputs {
         chars,
+        ink,
         char_shape,
         target,
         padding,
@@ -131,6 +132,7 @@ fn optimize_inner(
             let search = align::search(
                 &target,
                 &chars,
+                &ink,
                 &layer_offsets,
                 &config.align,
                 config.asymmetry,
@@ -206,6 +208,7 @@ fn optimize_inner(
             let mut cand_state = init_state(
                 &cand_padded,
                 &chars,
+                &ink,
                 &layer_offsets,
                 num_cols,
                 num_positions,
@@ -215,6 +218,7 @@ fn optimize_inner(
                 &mut cand_state,
                 &cand_padded,
                 &chars,
+                &ink,
                 &layer_offsets,
                 cand_weights.as_ref(),
                 num_cols,
@@ -225,7 +229,7 @@ fn optimize_inner(
             );
             // Score (and continue) the best state this candidate reached —
             // with SA the last pass need not be the best one.
-            cand_state.restore_best(&chars, num_cols, &layer_offsets, out_shape);
+            cand_state.restore_best(&ink, &chars, num_cols, &layer_offsets, out_shape);
             let (score, psnr, ssim) = align::score_mockup(
                 &cand_target,
                 &cand_state.mockup,
@@ -277,7 +281,7 @@ fn optimize_inner(
                 None => (target, content),
             };
             let target_padded = pad_to(&target, out_shape);
-            let state = init_state(&target_padded, &chars, &layer_offsets, num_cols, num_positions, &config);
+            let state = init_state(&target_padded, &chars, &ink, &layer_offsets, num_cols, num_positions, &config);
             (target, content, state)
         }
     };
@@ -302,6 +306,7 @@ fn optimize_inner(
         &mut state,
         &target_padded,
         &chars,
+        &ink,
         &layer_offsets,
         loss_weights.as_ref(),
         num_cols,
@@ -315,7 +320,7 @@ fn optimize_inner(
     // necessarily the best one: return the best state seen anywhere in the run
     // (including the rerank continuation). `error_over_time` keeps the true
     // trajectory; the returned art is its minimum point.
-    state.restore_best(&chars, num_cols, &layer_offsets, out_shape);
+    state.restore_best(&ink, &chars, num_cols, &layer_offsets, out_shape);
     let elapsed = start.elapsed();
     let final_error = if state.best_error.is_finite() {
         state.best_error
@@ -363,6 +368,7 @@ impl RunState {
     /// from `best_choices` so the whole state is consistent again.
     fn restore_best(
         &mut self,
+        ink: &Ink,
         chars: &Chars,
         num_cols: usize,
         layer_offsets: &[LayerOffset],
@@ -371,7 +377,7 @@ impl RunState {
         self.choices.assign(&self.best_choices);
         self.layers =
             render_all_layers(&self.best_choices, chars, num_cols, layer_offsets, out_shape);
-        self.mockup = combine_layers(&self.layers);
+        self.mockup = combine_layers(&self.layers, ink);
     }
 }
 
@@ -389,6 +395,7 @@ fn pad_to(target: &Image, out_shape: (usize, usize)) -> Image {
 fn init_state(
     target_padded: &Image,
     chars: &Chars,
+    ink: &Ink,
     layer_offsets: &[LayerOffset],
     num_cols: usize,
     num_positions: usize,
@@ -409,7 +416,7 @@ fn init_state(
             }
         }
         let layers = render_all_layers(&choices, chars, num_cols, layer_offsets, out_shape);
-        let mockup = combine_layers(&layers);
+        let mockup = combine_layers(&layers, ink);
         (layers, mockup)
     } else {
         // Blank — layers are all-white, choices are blank char (index 0)
@@ -439,6 +446,7 @@ fn run_loops(
     state: &mut RunState,
     target_padded: &Image,
     chars: &Chars,
+    ink: &Ink,
     layer_offsets: &[LayerOffset],
     loss_weights: Option<&Image>,
     num_cols: usize,
@@ -487,7 +495,7 @@ fn run_loops(
 
         for &(layer_num, layer_offset) in &shuffled_layers {
             // Compute background = product of all OTHER layers
-            let bg = compute_background(&state.layers, layer_num);
+            let bg = compute_background(&state.layers, layer_num, ink);
 
             // Get this layer's choices as a mutable 1D slice
             let mut layer_choices = state.choices.index_axis(Axis(0), layer_num).to_owned();
@@ -502,7 +510,7 @@ fn run_loops(
                 &bg,
                 &mut state.mockup,
                 target_padded,
-                chars,
+                ink,
                 &mut layer_choices,
                 layer_offset,
                 config.asymmetry,
@@ -532,7 +540,7 @@ fn run_loops(
                 .assign(&updated_layer);
 
             // Update mockup
-            state.mockup = combine_layers(&state.layers);
+            state.mockup = combine_layers(&state.layers, ink);
 
             // Error of the full state after this pass. The trajectory
             // (`error_over_time`, the progress chart) and the best-seen
@@ -587,6 +595,8 @@ fn run_loops(
 /// Inputs shared by the optimization pipeline and the alignment sweep.
 struct PreparedInputs {
     chars: Chars,
+    /// Ink model resolved from `chars` and the configured floor.
+    ink: Ink,
     char_shape: CharShape,
     /// Target image, resized and padded to the character grid.
     target: Image,
@@ -662,8 +672,10 @@ fn load_inputs(config: &OptimizeConfig) -> anyhow::Result<PreparedInputs> {
     let layer_offsets: Vec<LayerOffset> =
         fractional_to_pixel(&fractional_offsets, char_h, char_w);
 
+    let ink = Ink::new(config.ink_floor, &chars);
     Ok(PreparedInputs {
         chars,
+        ink,
         char_shape,
         target,
         padding,
@@ -691,6 +703,7 @@ pub fn align_search(
     Ok(align::search(
         &inputs.target,
         &inputs.chars,
+        &inputs.ink,
         &inputs.layer_offsets,
         &config.align,
         config.asymmetry,
@@ -735,6 +748,7 @@ mod tests {
             init_mode: InitMode::Blank,
             asymmetry: 0.1,
             center_focus: crate::types::CenterFocus::Off,
+            ink_floor: crate::types::InkFloor::Fixed(0.0),
             seed: Some(1),
             search: SearchAlgorithm::Greedy,
             init_temp: 0.0,
@@ -751,6 +765,7 @@ mod tests {
     #[test]
     fn test_returns_best_seen_state_not_last() {
         let chars = test_chars();
+        let ink = Ink::new(crate::types::InkFloor::Fixed(0.0), &chars);
         // 2x2 grid of 2x2 cells.
         let target = ndarray::arr2(&[
             [0.2f32, 0.4, 0.6, 0.8],
@@ -774,6 +789,7 @@ mod tests {
         let mut state = init_state(
             &target,
             &chars,
+            &ink,
             &layer_offsets,
             num_cols,
             num_positions,
@@ -783,6 +799,7 @@ mod tests {
             &mut state,
             &target,
             &chars,
+            &ink,
             &layer_offsets,
             None,
             num_cols,
@@ -791,7 +808,7 @@ mod tests {
             0,
             None,
         );
-        state.restore_best(&chars, num_cols, &layer_offsets, out_shape);
+        state.restore_best(&ink, &chars, num_cols, &layer_offsets, out_shape);
 
         // The returned state is consistent with the tracked best…
         let restored_err = asymmetric_mse(&target, &state.mockup, config.asymmetry, None);
@@ -817,6 +834,7 @@ mod tests {
     #[test]
     fn test_best_can_be_the_initial_state() {
         let chars = test_chars();
+        let ink = Ink::new(crate::types::InkFloor::Fixed(0.0), &chars);
         // A target the blank init matches exactly (all white).
         let target = Image::from_elem((4, 4), 1.0f32);
         let layer_offsets: Vec<LayerOffset> = vec![(0, 0)];
@@ -830,7 +848,7 @@ mod tests {
             ..test_config()
         };
 
-        let mut state = init_state(&target, &chars, &layer_offsets, num_cols, 4, &config);
+        let mut state = init_state(&target, &chars, &ink, &layer_offsets, num_cols, 4, &config);
         let init_error =
             asymmetric_mse(&target, &state.mockup, config.asymmetry, None);
         assert_eq!(init_error, 0.0);
@@ -839,6 +857,7 @@ mod tests {
             &mut state,
             &target,
             &chars,
+            &ink,
             &layer_offsets,
             None,
             num_cols,
@@ -847,7 +866,7 @@ mod tests {
             0,
             None,
         );
-        state.restore_best(&chars, num_cols, &layer_offsets, (4, 4));
+        state.restore_best(&ink, &chars, num_cols, &layer_offsets, (4, 4));
 
         assert_eq!(state.best_error, 0.0);
         assert_eq!(&state.choices, &state.best_choices);

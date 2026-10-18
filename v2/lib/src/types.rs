@@ -241,6 +241,21 @@ pub enum InitMode {
     Random,
 }
 
+/// Ink saturation floor (advanced option).
+///
+/// Real overstriking saturates: typing the same key over and over never
+/// reaches black — the result bottoms out at the ribbon's ink density.
+/// See [`crate::render::Ink`] for the compositing model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InkFloor {
+    /// Derive the floor from the charset scan: the darkest solid-ink pixel
+    /// measures the ribbon's ink density (default).
+    Auto,
+    /// Explicit floor in brightness units. Clamped to the darkest glyph
+    /// pixel so single strikes still render exactly as scanned.
+    Fixed(f32),
+}
+
 /// Complete optimization configuration.
 #[derive(Debug, Clone)]
 pub struct OptimizeConfig {
@@ -260,6 +275,8 @@ pub struct OptimizeConfig {
     pub asymmetry: f32,
     /// Spatial weighting of the loss and alignment score ("center focus").
     pub center_focus: CenterFocus,
+    /// Ink saturation floor (advanced): how dark overstriking can get.
+    pub ink_floor: InkFloor,
     /// RNG seed for reproducible runs (random init, SA decisions, layer
     /// shuffle). `None` = nondeterministic.
     pub seed: Option<u64>,

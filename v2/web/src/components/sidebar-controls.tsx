@@ -259,6 +259,49 @@ export function SidebarControls() {
               />
               Shuffle layer order
             </label>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between">
+                <label className="text-xs font-medium text-gray-500">Ink floor</label>
+                <span className="text-xs text-gray-400">
+                  {config.ink_floor === "auto"
+                    ? "auto"
+                    : (config.ink_floor as number).toFixed(2)}
+                </span>
+              </div>
+              <Select
+                value={config.ink_floor === "auto" ? "auto" : "custom"}
+                onValueChange={(v) =>
+                  setConfig(
+                    "ink_floor",
+                    v === "auto"
+                      ? "auto"
+                      : typeof config.ink_floor === "number"
+                        ? config.ink_floor
+                        : 0.1,
+                  )
+                }
+                disabled={busy}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto (from scan)</SelectItem>
+                  <SelectItem value="custom">Custom</SelectItem>
+                </SelectContent>
+              </Select>
+              {config.ink_floor !== "auto" && (
+                <Slider
+                  value={[config.ink_floor as number]}
+                  onValueChange={(v) =>
+                    setConfig("ink_floor", Array.isArray(v) ? v[0] : (v as unknown as number))
+                  }
+                  min={0} max={0.5} step={0.01}
+                  disabled={busy}
+                />
+              )}
+            </div>
           </CollapsibleContent>
         </Collapsible>
       </div>

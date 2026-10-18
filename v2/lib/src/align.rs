@@ -57,7 +57,7 @@ use ndarray::s;
 use rayon::prelude::*;
 
 use crate::metrics;
-use crate::render::{combine_layers, compute_background, render_layer};
+use crate::render::{Ink, combine_layers, compute_background, render_layer};
 use crate::search::optimize_layer_pass;
 use crate::types::{
     AlignConfig, AlignmentResult, AlignmentScore, AlignmentSearch, CenterFocus, Chars,
@@ -248,6 +248,7 @@ pub fn score_mockup(
 pub fn quick_mockup(
     target: &Image,
     chars: &Chars,
+    ink: &Ink,
     layer_offsets: &[LayerOffset],
     passes: u32,
     asymmetry: f32,
@@ -277,13 +278,13 @@ pub fn quick_mockup(
 
     for _ in 0..passes.max(1) {
         for (layer_num, &layer_offset) in layer_offsets.iter().enumerate() {
-            let bg = compute_background(&layers, layer_num);
+            let bg = compute_background(&layers, layer_num, ink);
             let mut layer_choices = choices.index_axis(ndarray::Axis(0), layer_num).to_owned();
             optimize_layer_pass(
                 &bg,
                 &mut mockup,
                 &target_padded,
-                chars,
+                ink,
                 &mut layer_choices,
                 layer_offset,
                 asymmetry,
@@ -305,11 +306,11 @@ pub fn quick_mockup(
             layers
                 .index_axis_mut(ndarray::Axis(0), layer_num)
                 .assign(&updated);
-            mockup = combine_layers(&layers);
+            mockup = combine_layers(&layers, ink);
         }
     }
 
-    combine_layers(&layers)
+    combine_layers(&layers, ink)
 }
 
 /// Score one candidate: crop the target, run the quick greedy pass, and
@@ -318,6 +319,7 @@ pub fn quick_mockup(
 fn evaluate_candidate(
     target: &Image,
     chars: &Chars,
+    ink: &Ink,
     layer_offsets: &[LayerOffset],
     config: &AlignConfig,
     asymmetry: f32,
@@ -332,6 +334,7 @@ fn evaluate_candidate(
     let mockup = quick_mockup(
         &candidate_target,
         chars,
+        ink,
         layer_offsets,
         config.passes,
         asymmetry,
@@ -380,6 +383,7 @@ fn evaluate_candidate(
 pub fn search(
     target: &Image,
     chars: &Chars,
+    ink: &Ink,
     layer_offsets: &[LayerOffset],
     config: &AlignConfig,
     asymmetry: f32,
@@ -418,6 +422,7 @@ pub fn search(
                     let r = evaluate_candidate(
                         target,
                         chars,
+                        ink,
                         screen_offsets,
                         config,
                         asymmetry,
@@ -472,6 +477,7 @@ pub fn search(
                     let (mut score, mockup) = evaluate_candidate(
                         target,
                         chars,
+                        ink,
                         layer_offsets,
                         config,
                         asymmetry,
@@ -528,7 +534,12 @@ pub fn search(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::InkFloor;
     use ndarray::arr3;
+
+    fn test_ink(chars: &Chars) -> Ink {
+        Ink::new(InkFloor::Fixed(0.0), chars)
+    }
 
     fn test_chars() -> Chars {
         // blank, half-dark vertical band, dark block
@@ -675,9 +686,11 @@ mod tests {
         };
         // Two layers → coarse + fine screen (single placement pass), then the
         // top 3 rescored with the full layer stack
+        let ink = test_ink(&chars);
         let result = search(
             &target,
             &chars,
+            &ink,
             &[(0, 0), (2, 2)],
             &config,
             0.1,
@@ -718,9 +731,11 @@ mod tests {
             rerank_loops: 0,
         };
         // One layer → screening is already the full evaluation
+        let ink = test_ink(&chars);
         let result = search(
             &target,
             &chars,
+            &ink,
             &[(0, 0)],
             &config,
             0.1,
@@ -737,6 +752,7 @@ mod tests {
     fn test_search_with_center_focus() {
         // Weighted scoring path: scores must be finite and sorted
         let chars = test_chars();
+        let ink = test_ink(&chars);
         let target = Image::from_elem((8, 8), 0.6);
         let config = AlignConfig {
             enabled: true,
@@ -750,6 +766,7 @@ mod tests {
         let result = search(
             &target,
             &chars,
+            &ink,
             &[(0, 0)],
             &config,
             0.1,
@@ -765,10 +782,12 @@ mod tests {
     #[test]
     fn test_quick_mockup_shape() {
         let chars = test_chars();
+        let ink = test_ink(&chars);
         let target = Image::from_elem((8, 8), 0.6);
         let mockup = quick_mockup(
             &target,
             &chars,
+            &ink,
             &[(0, 0), (2, 2)],
             1,
             0.1,

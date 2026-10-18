@@ -134,6 +134,30 @@ the winner continues) from its own best state too.
 the curve is directly comparable across passes of different layers and its
 minimum is exactly the returned artwork. v1 returns the last state instead.
 
+## Ink floor (advanced)
+
+Overstriking saturates in reality: typing the same grey key over and over
+never reaches black — the result bottoms out at the ribbon's ink density.
+The paper's (and v1's) plain multiplicative compositing disagrees: eight
+strikes of a 0.5-grey pixel compose to ~0.004. The ink model bounds it:
+
+```
+τ(c) = clamp((c − f) / (1 − f), 0, 1)     // effective whiteness
+composite = f + (1 − f) · Π τ(layers)
+```
+
+A single strike still renders exactly as scanned, k overstrikes approach `f`
+exponentially, and `f = 0` reproduces the plain product exactly. `f` comes
+from `--ink-floor auto|<value>` (default `auto`): the darkest pixel in the
+charset scan measures the ink density; an explicit value is clamped down to
+that same bound so single strikes never render lighter than the scan. The
+web UI exposes both under **Advanced → Ink floor**.
+
+Measured on sc-2/mwdog: the old model's output contained 5 % pure-black
+pixels the typewriter cannot print; with `auto` (f = 0.114) not a single
+pixel goes below the floor. See `ink-and-dither-plan.md` for the model
+derivation and a calibration worksheet plan.
+
 ## Center Focus
 
 `--center-focus off|soft|strong` (same toggle in the web UI) weights both the

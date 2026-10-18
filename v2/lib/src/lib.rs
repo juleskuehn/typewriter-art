@@ -2,12 +2,12 @@
 //!
 //! Converts grayscale photographs into typed characters where multiple layers
 //! of typing overlap with sub-character offsets to create continuous tone
-//! through multiplicative ink accumulation.
+//! through overlapping, saturating ink accumulation.
 //!
 //! ## Quick Usage
 //!
 //! ```rust,no_run
-//! use typewriter_art::{optimize, AlignConfig, CenterFocus, OptimizeConfig, InitMode, SearchAlgorithm};
+//! use typewriter_art::{optimize, AlignConfig, CenterFocus, InitMode, InkFloor, OptimizeConfig, SearchAlgorithm};
 //!
 //! let config = OptimizeConfig {
 //!     charset: "hermes-sm".into(),
@@ -17,6 +17,7 @@
 //!     init_mode: InitMode::Random,
 //!     asymmetry: 0.1,
 //!     center_focus: CenterFocus::Soft,
+//!     ink_floor: InkFloor::Auto,
 //!     search: SearchAlgorithm::SimAnneal,
 //!     init_temp: 0.001,
 //!     layers: "4x2".into(),
@@ -66,6 +67,6 @@ pub mod weights;
 pub use optimize::{align_search, optimize, optimize_with_progress, ProgressEvent};
 pub use types::{
     AlignConfig, AlignmentResult, AlignmentScore, CenterFocus, CharsetConfig, CropTransform,
-    InitMode, OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
+    InitMode, InkFloor, OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
 };
 pub use export::{build_json_result, image_to_base64_png, JsonResult};

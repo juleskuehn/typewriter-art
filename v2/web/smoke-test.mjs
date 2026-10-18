@@ -32,6 +32,7 @@ const config = {
   align_enabled: true,
   align_deluxe: true,
   center_focus: "soft",
+  ink_floor: "auto",
 };
 
 // 2. Run through the real client SSE code

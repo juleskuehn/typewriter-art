@@ -9,7 +9,7 @@ use std::sync::mpsc;use std::thread;
 use clap::Parser;
 use typewriter_art::{
     align_search, build_json_result, export, optimize, optimize_with_progress, AlignConfig,
-    CenterFocus, CropTransform, InitMode, OptimizeConfig, SearchAlgorithm,
+    CenterFocus, CropTransform, InitMode, InkFloor, OptimizeConfig, SearchAlgorithm,
 };
 
 fn parse_search(s: &str) -> Result<SearchAlgorithm, String> {
@@ -46,6 +46,18 @@ fn parse_center_focus(s: &str) -> Result<CenterFocus, String> {
             s
         )),
     }
+}
+
+fn parse_ink_floor(s: &str) -> Result<InkFloor, String> {
+    if matches!(s.to_lowercase().as_str(), "auto" | "a") {
+        return Ok(InkFloor::Auto);
+    }
+    s.parse::<f32>().map(InkFloor::Fixed).map_err(|_| {
+        format!(
+            "Invalid ink floor '{}'. Use 'auto' or a brightness value in [0, 1]",
+            s
+        )
+    })
 }
 
 fn format_search(s: &SearchAlgorithm) -> String {
@@ -94,6 +106,12 @@ struct Args {
     /// (off | soft | strong)
     #[arg(long = "center-focus", default_value = "soft", value_parser = parse_center_focus)]
     center_focus: CenterFocus,
+
+    /// Ink saturation floor: how dark overstriking can get. 'auto' derives it
+    /// from the charset scan (darkest glyph pixel = ribbon ink density), or
+    /// give a brightness value (advanced)
+    #[arg(long = "ink-floor", default_value = "auto", value_parser = parse_ink_floor)]
+    ink_floor: InkFloor,
 
     /// Search algorithm: simAnneal or greedy
     #[arg(short = 's', long, default_value = "simAnneal", value_parser = parse_search)]
@@ -247,6 +265,7 @@ fn main() -> anyhow::Result<()> {
         init_mode: args.init_mode,
         asymmetry: args.asymmetry,
         center_focus: args.center_focus,
+        ink_floor: args.ink_floor,
         search: args.search,
         init_temp: args.init_temp,
         shuffle: !args.no_shuffle,
