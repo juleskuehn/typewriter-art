@@ -67,12 +67,7 @@ pub fn chop_charset(
     // Resize the sprite sheet to the adjusted character dimensions
     let new_w = (new_step_x * slices_x) as u32;
     let new_h = (new_step_y * slices_y) as u32;
-    let resized = image::imageops::resize(
-        &img,
-        new_w,
-        new_h,
-        image::imageops::FilterType::Triangle,
-    );
+    let resized = crate::resize::resize_area(&img, new_w, new_h);
 
     // Convert to float32 [0.0, 1.0]
     let pixels: Vec<f32> = resized
@@ -114,6 +109,13 @@ pub fn chop_charset(
         );
     }
 
+    // Apply include/exclude filtering (v1 `chop_charset` semantics)
+    glyphs = apply_include_exclude(
+        glyphs,
+        &config.include_chars,
+        &config.exclude_chars,
+    );
+
     // Stack into 3D array: (num_chars, height, width)
     let num_chars = glyphs.len();
     let h = glyphs[0].nrows();
@@ -126,9 +128,87 @@ pub fn chop_charset(
             .assign(&glyph);
     }
 
+    log::info!(
+        "Charset '{}': {} glyphs of {}×{} (from {}×{} sprite sheet)",
+        config.charset_name,
+        num_chars,
+        h,
+        w,
+        img_w,
+        img_h,
+    );
+
     Ok(LoadedCharset {
         chars,
         x_change,
         y_change,
     })
+}
+
+/// Apply the v1 `chop_charset` include/exclude filter.
+///
+/// Call this *after* prepending the blank tile, so index 0 is the blank.
+/// Port of v1:
+/// - `includeChars`: `[c for i, c in enumerate(chars) if i in includeChars or i == 0]`
+/// - `excludeChars`: `[c for i, c in enumerate(chars) if i + 1 not in excludeChars]`
+///   (i.e. exclude value `v` drops the glyph at index `v - 1`)
+fn apply_include_exclude(
+    glyphs: Vec<ndarray::Array2<f32>>,
+    include_chars: &[usize],
+    exclude_chars: &[usize],
+) -> Vec<ndarray::Array2<f32>> {
+    if !include_chars.is_empty() {
+        glyphs
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| *i == 0 || include_chars.contains(i))
+            .map(|(_, g)| g)
+            .collect()
+    } else if !exclude_chars.is_empty() {
+        glyphs
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !exclude_chars.contains(&(i + 1)))
+            .map(|(_, g)| g)
+            .collect()
+    } else {
+        glyphs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn glyphs(n: usize) -> Vec<ndarray::Array2<f32>> {
+        // Distinguish glyphs by fill value 0.1 * (i + 1)
+        (0..n)
+            .map(|i| ndarray::Array2::from_elem((2, 2), 0.1 * (i + 1) as f32))
+            .collect()
+    }
+
+    fn values(gs: &[ndarray::Array2<f32>]) -> Vec<f32> {
+        gs.iter().map(|g| g[[0, 0]]).collect()
+    }
+
+    #[test]
+    fn test_exclude_chars_semantics() {
+        // 5 glyphs (index 0 = blank). excludeChars value v drops index v-1,
+        // so excluding 2 and 4 drops indices 1 and 3.
+        let out = apply_include_exclude(glyphs(5), &[], &[2, 4]);
+        assert_eq!(values(&out), vec![0.1, 0.3, 0.5]);
+    }
+
+    #[test]
+    fn test_include_chars_semantics() {
+        // includeChars keeps only the listed indices plus the blank at 0.
+        let out = apply_include_exclude(glyphs(5), &[2, 4], &[9, 9, 9]);
+        assert_eq!(values(&out), vec![0.1, 0.3, 0.5]);
+    }
+
+    #[test]
+    fn test_no_filtering() {
+        let out = apply_include_exclude(glyphs(4), &[], &[]);
+        assert_eq!(values(&out), vec![0.1, 0.2, 0.3, 0.4]);
+    }
 }

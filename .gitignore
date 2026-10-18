@@ -4,3 +4,12 @@ __pycache__
 *.DS_Store
 */uploads/*
 */target/*
+
+# click-test artifacts
+.pi-clicktest/
+
+# local source media & video renders (large binaries, kept out of the repo)
+/src/images/*
+!/src/images/mwdog_crop.png
+/src/*.mp4
+/src/final.png

@@ -3,9 +3,8 @@
 //! Drop-in replacement for `optimize.py`. Uses clap for argument parsing.
 //! Supports `--json` mode for web server integration.
 
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
+use std::path::PathBuf;
+use std::sync::mpsc;use std::thread;
 
 use clap::Parser;
 use typewriter_art::{build_json_result, optimize, optimize_with_progress, export, InitMode, OptimizeConfig, SearchAlgorithm};
@@ -105,7 +104,9 @@ struct Args {
     json: bool,
 
     /// Stream progress as NDJSON lines to stdout (for SSE integration).
-    /// Each line is a JSON object: {"type":"progress","loop":1,"layer":3,"error":0.042,"mockup_b64":"..."}
+    /// Each line is a JSON object: {"loop_num":1,"num_loops":15,"layer_num":3,
+    /// "num_layers":8,"error":0.042,"mockup_b64":"..."} (mockup_b64 only on the
+    /// first layer), followed by a final line {"type":"complete","result":{...}}.
     /// Implies --json.
     #[arg(long = "stream", default_value = "false")]
     stream: bool,
@@ -126,13 +127,18 @@ fn main() -> anyhow::Result<()> {
         .target(log_target)
         .init();
 
-    // Determine output directory
-    let results_dir = if let Some(ref dir) = args.out_dir {
-        PathBuf::from(dir)
+    // v1 parity: `--out_file` is the path of the final mockup PNG.
+    // `--out-dir` (optional) redirects all outputs into a directory.
+    let out_file: PathBuf = if let Some(ref dir) = args.out_dir {
+        PathBuf::from(dir).join("final.png")
     } else {
-        let out_path = PathBuf::from(&args.out_file);
-        out_path.parent().unwrap_or(Path::new("results")).to_path_buf()
+        PathBuf::from(&args.out_file)
     };
+    let results_dir = out_file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("results"));
 
     let config = OptimizeConfig {
         charset: args.charset,
@@ -145,7 +151,7 @@ fn main() -> anyhow::Result<()> {
         search: args.search,
         init_temp: args.init_temp,
         shuffle: !args.no_shuffle,
-        out_file: results_dir.join("final.png").to_string_lossy().to_string(),
+        out_file: out_file.to_string_lossy().to_string(),
     };
 
     if !args.json && !args.stream {
@@ -183,7 +189,7 @@ fn main() -> anyhow::Result<()> {
 
     // Save results to disk (always, so they're available for download)
     std::fs::create_dir_all(&results_dir)?;
-    export::save_mockup(&result, &results_dir.join("final.png"))?;
+    export::save_mockup(&result, &out_file)?;
     export::save_layers(&result, &results_dir)?;
     export::save_choices(&result, &results_dir.join("choices.json"))?;
     export::save_stats(&result, &results_dir.join("stats.txt"))?;
@@ -214,7 +220,7 @@ fn main() -> anyhow::Result<()> {
         }
         println!("Final error: {:.6}", result.stats.final_error);
 
-        println!("Mockup saved to: {}", results_dir.join("final.png").display());
+        println!("Mockup saved to: {}", out_file.display());
         println!("Layer images saved to: {}", results_dir.display());
         println!("Choices saved to: {}", results_dir.join("choices.json").display());
     }

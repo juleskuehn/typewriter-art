@@ -303,6 +303,7 @@ fn optimize_inner(
         num_rows,
         num_cols,
         fractional_offsets,
+        layer_offsets,
     })
 }
 

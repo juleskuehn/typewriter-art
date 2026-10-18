@@ -114,24 +114,35 @@ fn float_image_to_gray(img: &crate::types::Image) -> image::GrayImage {
 
 /// Crop the mockup to remove padding, matching v1 behavior.
 ///
-/// In v1, the final mockup is cropped to remove the padding added during
-/// target preprocessing. We replicate that by using the padding info.
+/// In v1 (directory mode), the final mockup is cropped by the maximum layer
+/// offset in each dimension: `mockup[:-max_offset_y, :-max_offset_x]`.
+/// The white border added during target preprocessing is *not* removed,
+/// because layer characters can straddle it.
 pub fn crop_mockup(result: &OptimizeResult) -> crate::types::Image {
-    let _padding = result.padding;
-
-    let max_offset_y = result.fractional_offsets.iter()
-        .map(|&(y, _)| (y * result.layers.shape()[1] as f32 / result.num_rows as f32) as usize)
+    let max_offset_y = result
+        .layer_offsets
+        .iter()
+        .map(|o| o.0)
+        .max()
+        .unwrap_or(0);
+    let max_offset_x = result
+        .layer_offsets
+        .iter()
+        .map(|o| o.1)
         .max()
         .unwrap_or(0);
 
     let h = result.mockup.nrows();
     let w = result.mockup.ncols();
 
-    // The crop matches how v1 saves the final image
-    // It removes the padding at bottom (from layer offsets)
+    // The crop matches how v1 saves the final image:
+    // remove the padding at bottom/right (from layer offsets) only
     result
         .mockup
-        .slice(ndarray::s![..(h - max_offset_y), ..(w - max_offset_y)])
+        .slice(ndarray::s![
+            ..h.saturating_sub(max_offset_y),
+            ..w.saturating_sub(max_offset_x)
+        ])
         .to_owned()
 }
 

@@ -144,12 +144,16 @@ export const useOptimizerStore = create<OptimizerStore>()(
         const item = get().history.find((h) => h.id === activeId);
         if (!item) return;
 
+        // Errors for the current run only — never append to a previous run's curve
+        const runErrors: number[] = [];
+
         try {
           const result: OptimizeResult = await runOptimization(
             item.imageDataUrl,
             item.config,
             // Progress callback: update the result incrementally
             (progress) => {
+              runErrors.push(progress.error);
               set((s) => ({
                 history: s.history.map((h) =>
                   h.id === activeId
@@ -165,7 +169,7 @@ export const useOptimizerStore = create<OptimizerStore>()(
                             ...(h.result?.stats ?? { total_time_ns: 0, total_comparisons: 0, final_error: 0 }),
                             final_error: progress.error,
                           },
-                          error_over_time: [...(h.result?.error_over_time ?? []), progress.error],
+                          error_over_time: [...runErrors],
                           choices: h.result?.choices ?? {},
                         },
                         timestamp: Date.now(),
@@ -213,6 +217,12 @@ export const useOptimizerStore = create<OptimizerStore>()(
         history: state.history.map((h) => ({
           id: h.id,
           thumbnail: h.thumbnail,
+          // Keep the full source image when small enough — after reload,
+          // re-optimizing would otherwise silently use the thumbnail.
+          imageDataUrl:
+            h.imageDataUrl && h.imageDataUrl.length < 500_000
+              ? h.imageDataUrl
+              : undefined,
           config: h.config,
           resultMeta: h.result
             ? {

@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { spawn } from "child_process";
+import { Readable } from "stream";
 import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import crypto from "crypto";
-import type { Readable } from "stream";
 
-import type { OptimizeConfig, OptimizeResult } from "@/lib/types";
+import type { OptimizeConfig } from "@/lib/types";
+
+// This route spawns the optimizer binary and streams progress.
+export const runtime = "nodejs";
 
 function buildArgs(config: OptimizeConfig, imagePath: string, outDir: string): string[] {
   const args = [
@@ -28,7 +31,8 @@ function buildArgs(config: OptimizeConfig, imagePath: string, outDir: string): s
 
 function findBinary(): string {
   const webDir = process.cwd();
-  const relativePath = path.join(webDir, "..", "target", "release", "optimize");
+  const exe = process.platform === "win32" ? "optimize.exe" : "optimize";
+  const relativePath = path.join(webDir, "..", "target", "release", exe);
   if (existsSync(relativePath)) return relativePath;
   throw new Error(
     `Rust binary not found at ${relativePath}. ` +
@@ -83,7 +87,7 @@ export async function POST(request: Request) {
     console.log(`[optimize ${jobId}] Streaming: ${binary} ${args.join(" ")}`);
 
     const stream = createSSEStream(binary, args, v2Root, jobId);
-    return new Response(stream as unknown as ReadableStream, {
+    return new Response(Readable.toWeb(stream) as ReadableStream, {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -107,7 +111,6 @@ function createSSEStream(
   cwd: string,
   jobId: string
 ): Readable {
-  const { Readable } = require("stream");
   const child = spawn(binary, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
 
   const stream = new Readable({
@@ -115,8 +118,16 @@ function createSSEStream(
   });
 
   let buffer = "";
+  let ended = false;
+  function endStream() {
+    if (!ended) {
+      ended = true;
+      stream.push(null); // end stream
+    }
+  }
 
   function emitSSE(event: string, data: string) {
+    if (ended) return;
     stream.push(`event: ${event}\ndata: ${data}\n\n`);
   }
 
@@ -133,7 +144,7 @@ function createSSEStream(
 
         if (parsed.type === "complete") {
           emitSSE("complete", JSON.stringify(parsed.result));
-          stream.push(null); // end stream
+          endStream();
         } else if (parsed.loop_num !== undefined) {
           // Progress event
           emitSSE("progress", line);
@@ -150,11 +161,11 @@ function createSSEStream(
 
   child.on("error", (err) => {
     emitSSE("error", JSON.stringify({ message: err.message }));
-    stream.push(null);
+    endStream();
   });
 
   child.on("close", (code) => {
-    if (code !== 0) {
+    if (code !== 0 && !ended) {
       emitSSE("error", JSON.stringify({ message: `Exit code ${code}` }));
     }
     // Flush any remaining buffer
@@ -166,7 +177,7 @@ function createSSEStream(
         }
       } catch { /* ignore */ }
     }
-    stream.push(null);
+    endStream();
   });
 
   return stream;

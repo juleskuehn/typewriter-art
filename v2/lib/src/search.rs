@@ -72,7 +72,7 @@ pub fn optimize_layer_pass(
             // Select character using search strategy
             let (new_choice, new_composite, comparisons) = match mode {
                 SearchAlgorithm::Greedy => {
-                    greedy_search(&all_mses, prev_choice, &bg_slice, chars)
+                    greedy_search(&all_mses, cur_amse, prev_choice, &bg_slice, chars)
                 }
                 SearchAlgorithm::SimAnneal => {
                     simulated_annealing(
@@ -116,19 +116,87 @@ pub fn optimize_layer_pass(
     (total_comparisons, mean_error as f32)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::arr3;
+
+    fn test_chars() -> Chars {
+        // 3 chars: blank (all white), half-dark, all-dark
+        arr3(&[
+            [[1.0, 1.0], [1.0, 1.0]],
+            [[1.0, 0.5], [1.0, 0.5]],
+            [[0.5, 0.5], [0.5, 0.5]],
+        ])
+    }
+
+    #[test]
+    fn test_greedy_keeps_current_when_best() {
+        // Current char (index 1) is already the best choice:
+        // bg * char 1 matches the target exactly, so no candidate
+        // should beat it and greedy must keep it (v1 parity).
+        let chars = test_chars();
+        let bg = Image::from_elem((2, 2), 1.0);
+        let target = Image::from_shape_vec((2, 2), vec![1.0, 0.5, 1.0, 0.5]).unwrap();
+
+        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0);
+        let cur_amse = all_mses[1];
+
+        let (choice, _composite, comparisons) =
+            greedy_search(&all_mses, cur_amse, 1, &bg, &chars);
+        assert_eq!(choice, 1);
+        assert_eq!(comparisons, 3);
+    }
+
+    #[test]
+    fn test_greedy_switches_when_better() {
+        let chars = test_chars();
+        let bg = Image::from_elem((2, 2), 1.0);
+        // Target matches char 2 (all 0.5)
+        let target = Image::from_elem((2, 2), 0.5);
+
+        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0);
+        let cur_amse = all_mses[1];
+
+        let (choice, _composite, _comparisons) =
+            greedy_search(&all_mses, cur_amse, 1, &bg, &chars);
+        assert_eq!(choice, 2);
+    }
+
+    #[test]
+    fn test_sa_counts_examined_comparisons() {
+        // With temperature 0, SA only accepts strict improvements.
+        // Current char is best → all candidates examined, no switch.
+        let chars = test_chars();
+        let bg = Image::from_elem((2, 2), 1.0);
+        let target = Image::from_shape_vec((2, 2), vec![1.0, 0.5, 1.0, 0.5]).unwrap();
+
+        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0);
+        let cur_amse = all_mses[1];
+
+        let (choice, _composite, comparisons) =
+            simulated_annealing(&all_mses, cur_amse, 1, &bg, &chars, 0.0);
+        assert_eq!(choice, 1);
+        assert_eq!(comparisons, 3);
+    }
+}
+
 /// Greedy search: pick the character with the lowest MSE.
 ///
-/// Never picks the same character as current (to force exploration).
+/// Port of v1 semantics: only switch away from the current character when a
+/// candidate is *strictly better* than the current composite's error
+/// (`new_amse < cur_amse`); otherwise keep the current character.
 /// Returns the character index, its composite image, and comparisons made.
 pub fn greedy_search(
     all_mses: &Array1<f32>,
+    cur_amse: f32,
     prev_choice: u16,
     bg_slice: &Image,
     chars: &Chars,
 ) -> (u16, Image, u32) {
     let num_chars = chars.shape()[0] as u16;
     let mut best_idx = prev_choice;
-    let mut best_mse = f32::MAX;
+    let mut best_mse = cur_amse;
     let mut comparisons: u32 = 0;
 
     for idx in 0..num_chars {
@@ -151,7 +219,8 @@ pub fn greedy_search(
 ///
 /// Precomputed MSEs are evaluated in random order, accepting the first
 /// candidate that passes the SA test. This preserves SA semantics while
-/// using batch-computed errors.
+/// using batch-computed errors. `comparisons` counts the candidates actually
+/// examined (matching v1's early-exit counting).
 pub fn simulated_annealing(
     all_mses: &Array1<f32>,
     cur_amse: f32,
@@ -169,7 +238,9 @@ pub fn simulated_annealing(
     let mut rng = rand::thread_rng();
     indices.shuffle(&mut rng);
 
+    let mut comparisons: u32 = 0;
     for &new_idx in &indices {
+        comparisons += 1;
         if new_idx == prev_choice {
             continue;
         }
@@ -180,7 +251,7 @@ pub fn simulated_annealing(
         // Always accept improvements
         if delta > 0.0 {
             let composite = bg_slice * &chars.index_axis(Axis(0), new_idx as usize);
-            return (new_idx, composite.to_owned(), indices.len() as u32);
+            return (new_idx, composite.to_owned(), comparisons);
         }
 
         // Probabilistically accept worse moves (SA)
@@ -188,14 +259,14 @@ pub fn simulated_annealing(
             let acceptance_prob = (delta / temperature).exp();
             if acceptance_prob > rand::random::<f32>() {
                 let composite = bg_slice * &chars.index_axis(Axis(0), new_idx as usize);
-                return (new_idx, composite.to_owned(), indices.len() as u32);
+                return (new_idx, composite.to_owned(), comparisons);
             }
         }
     }
 
     // No replacement found — keep current character
     let composite = bg_slice * &chars.index_axis(Axis(0), prev_choice as usize);
-    (prev_choice, composite.to_owned(), indices.len() as u32)
+    (prev_choice, composite.to_owned(), comparisons)
 }
 
 /// Compute asymmetric mean squared error.
@@ -205,9 +276,8 @@ pub fn simulated_annealing(
 /// once a region is too light, later layers can't fix it.
 #[inline]
 pub fn asymmetric_mse(target: &Image, composite: &Image, asymmetry: f32) -> f32 {
-    let diff = target - composite;
     let mut total: f64 = 0.0;
-    let n = diff.len();
+    let n = target.len();
 
     // Single-pass computation for better performance
     for (&x, &y) in target.iter().zip(composite.iter()) {

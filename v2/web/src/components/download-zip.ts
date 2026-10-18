@@ -24,14 +24,27 @@ export async function downloadZip(result: OptimizeResult) {
   // Choices JSON
   zip.file("choices.json", JSON.stringify(result.choices, null, 2));
 
-  // Stats text
+  // Stats text — same format as the CLI's stats.txt
+  const usPerComparison =
+    result.stats.total_comparisons > 0
+      ? `Time per comparison: ${(result.stats.total_time_ns / result.stats.total_comparisons / 1000).toFixed(3)} µs\n`
+      : "";
   const statsText = [
-    `Total time: ${(result.stats.total_time_ns / 1e6).toFixed(1)} ms`,
+    `Total time: ${(result.stats.total_time_ns / 1e9).toFixed(3)} s`,
     `Total comparisons: ${result.stats.total_comparisons}`,
-    `Final error: ${result.stats.final_error}`,
-    `Grid: ${result.num_cols}×${result.num_rows}`,
-  ].join("\n");
+    usPerComparison.trimEnd(),
+    `Final error: ${result.stats.final_error.toFixed(6)}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
   zip.file("stats.txt", statsText);
+
+  // Error over time — same format as the CLI's error_over_time.csv
+  const csv = [
+    "iteration,error",
+    ...result.error_over_time.map((err, i) => `${i},${err}`),
+  ].join("\n");
+  zip.file("error_over_time.csv", csv);
 
   const blob = await zip.generateAsync({ type: "blob" });
   const url = URL.createObjectURL(blob);

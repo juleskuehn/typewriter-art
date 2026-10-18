@@ -49,8 +49,14 @@ pub struct CharsetConfig {
     pub slices_x: usize,
     #[serde(rename = "slicesY")]
     pub slices_y: usize,
-    #[serde(rename = "excludeChars")]
+    /// Indices of characters to exclude (v1 semantics: value `v` excludes the
+    /// glyph at index `v - 1` in the blank-prepended list).
+    #[serde(rename = "excludeChars", default)]
     pub exclude_chars: Vec<usize>,
+    /// Indices of characters to include (takes precedence over `exclude_chars`
+    /// when non-empty; the blank tile at index 0 is always kept).
+    #[serde(rename = "includeChars", default)]
+    pub include_chars: Vec<usize>,
     #[serde(rename = "whiteThreshold")]
     pub white_threshold: f32,
     #[serde(rename = "blankSpace")]
@@ -131,4 +137,6 @@ pub struct OptimizeResult {
     pub num_cols: usize,
     /// Fractional layer offsets (for output formatting).
     pub fractional_offsets: Vec<FractionalOffset>,
+    /// Layer offsets in pixels (for cropping/export).
+    pub layer_offsets: Vec<LayerOffset>,
 }

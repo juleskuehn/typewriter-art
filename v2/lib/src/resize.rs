@@ -36,15 +36,15 @@ pub fn resize_target(
         .round() as u32;
 
     // Resize the image
-    let mut resized = image::imageops::resize(
+    // (v1 uses cv2.INTER_AREA; `resize_area` below is the exact equivalent)
+    let mut resized = crate::resize::resize_area(
         im,
         out_width,
         out_height,
-        image::imageops::FilterType::Triangle,
     );
 
     // Pad height to be a multiple of char_height
-    let mut padded_h = out_height as usize;
+    let padded_h = out_height as usize;
     if padded_h % char_height != 0 {
         let new_height = ((padded_h / char_height) + 1) * char_height;
         let mut blank = image::GrayImage::new(out_width, new_height as u32);
@@ -55,7 +55,6 @@ pub fn resize_target(
         // Copy resized image into top of blank
         image::imageops::overlay(&mut blank, &resized, 0, 0);
         resized = blank;
-        padded_h = new_height;
     }
 
     // Convert to ndarray float [0.0, 1.0]
@@ -81,14 +80,80 @@ pub fn resize_target(
     }
 
     let final_h = array.nrows();
+    // v1 parity: bottom padding = white rows below the resized content,
+    // i.e. final_h - (content top offset + out_height), clamped at 0.
+    // (v1: `newHeight - outHeight + charHeight // 2`)
+    let bottom = final_h.saturating_sub(pad_top + out_height as usize);
     let padding = Padding {
         top: pad_top,
         right: pad_right,
-        bottom: pad_bottom + (final_h - padded_h),
+        bottom,
         left: pad_left,
     };
 
     (array, padding)
+}
+
+/// Resize a grayscale image using area averaging (box filter with exact
+/// fractional coverage).
+///
+/// This is the equivalent of OpenCV's `cv2.INTER_AREA`, which v1 used for both
+/// the target image and the charset sprite sheet. When downscaling it computes
+/// the true average of the source pixels covered by each output pixel
+/// (no aliasing); when upscaling it interpolates linearly between the covered
+/// source pixels.
+pub fn resize_area(im: &image::GrayImage, new_w: u32, new_h: u32) -> image::GrayImage {
+    let (in_w, in_h) = im.dimensions();
+    if (new_w, new_h) == (in_w, in_h) {
+        return im.clone();
+    }
+
+    let sx = in_w as f64 / new_w as f64;
+    let sy = in_h as f64 / new_h as f64;
+
+    let mut out = image::GrayImage::new(new_w, new_h);
+    for oy in 0..new_h {
+        let y0 = f64::from(oy) * sy;
+        let y1 = f64::from(oy + 1) * sy;
+        let iy0 = y0.floor() as u32;
+        let iy1 = y1.ceil() as u32; // exclusive
+
+        for ox in 0..new_w {
+            let x0 = f64::from(ox) * sx;
+            let x1 = f64::from(ox + 1) * sx;
+            let ix0 = x0.floor() as u32;
+            let ix1 = x1.ceil() as u32; // exclusive
+
+            let mut sum = 0.0;
+            let mut weight_sum = 0.0;
+
+            for iy in iy0..iy1.min(in_h) {
+                // Vertical overlap of the source pixel with the output box
+                let wy = (y1.min(f64::from(iy + 1)) - y0.max(f64::from(iy))).max(0.0);
+                if wy <= 0.0 {
+                    continue;
+                }
+                for ix in ix0..ix1.min(in_w) {
+                    // Horizontal overlap of the source pixel with the output box
+                    let wx = (x1.min(f64::from(ix + 1)) - x0.max(f64::from(ix))).max(0.0);
+                    if wx <= 0.0 {
+                        continue;
+                    }
+                    let w = wx * wy;
+                    sum += w * f64::from(im.get_pixel(ix, iy).0[0]);
+                    weight_sum += w;
+                }
+            }
+
+            let value = if weight_sum > 0.0 {
+                (sum / weight_sum).round() as u8
+            } else {
+                255
+            };
+            out.put_pixel(ox, oy, image::Luma([value]));
+        }
+    }
+    out
 }
 
 /// Convert a grayscale image to a float ndarray [0.0, 1.0].
@@ -126,5 +191,52 @@ mod tests {
         assert!((padded[[0, 0]] - 1.0).abs() < 1e-6);
         // Center should be original
         assert!((padded[[1, 3]] - 0.5).abs() < 1e-6);
+    }
+
+    fn gray(w: u32, h: u32, fill: u8) -> image::GrayImage {
+        image::GrayImage::from_pixel(w, h, image::Luma([fill]))
+    }
+
+    #[test]
+    fn test_resize_area_identity() {
+        let img = gray(6, 4, 128);
+        let out = resize_area(&img, 6, 4);
+        assert_eq!(out.dimensions(), (6, 4));
+        assert!(out.pixels().all(|p| p.0[0] == 128));
+    }
+
+    #[test]
+    fn test_resize_area_integer_downscale_averages() {
+        // 4x4 → 2x2: each output pixel averages a 2x2 block (cv2.INTER_AREA)
+        let img = image::GrayImage::from_fn(4, 4, |x, y| {
+            image::Luma([((y / 2) * 2 + (x / 2)) as u8 * 63])
+        });
+        // Blocks: [0,63; 126,189]
+        let out = resize_area(&img, 2, 2);
+        assert_eq!(out.get_pixel(0, 0).0[0], 0);
+        assert_eq!(out.get_pixel(1, 0).0[0], 63);
+        assert_eq!(out.get_pixel(0, 1).0[0], 126);
+        assert_eq!(out.get_pixel(1, 1).0[0], 189);
+    }
+
+    #[test]
+    fn test_resize_area_fractional_downscale_averages() {
+        // 3px of values [0, 100, 200] → 2px: each covers 1.5 source px.
+        // out[0] = (0 + 100/2) / 1.5 = 33; out[1] = (100/2 + 200) / 1.5 = 167
+        let img = image::GrayImage::from_fn(3, 1, |x, _| image::Luma([x as u8 * 100]));
+        let out = resize_area(&img, 2, 1);
+        assert_eq!(out.get_pixel(0, 0).0[0], 33);
+        assert_eq!(out.get_pixel(1, 0).0[0], 167);
+    }
+
+    #[test]
+    fn test_resize_target_bottom_padding() {
+        // Target that needs no height padding and has non-white bottom rows:
+        // bottom padding should be char_height / 2 (border only)
+        let img = gray(8, 16, 128); // exactly 2 chars tall, not white
+        let (arr, padding) = resize_target(&img, 4, (8, 2), (1.0, 1.0));
+        assert_eq!(arr.nrows() % 8, 0);
+        assert_eq!(padding.top, 4);
+        assert_eq!(padding.bottom, 4); // 16 rows content + 4 border - content ends 4 above bottom
     }
 }

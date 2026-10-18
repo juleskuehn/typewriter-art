@@ -9,7 +9,8 @@ export interface ProgressEvent {
   layer_num: number;
   num_layers: number;
   error: number;
-  mockup_b64: string | null;
+  /** Base64 PNG of the current mockup — sent on the layer-0 pass of each loop. */
+  mockup_b64?: string;
 }
 
 export type OptimizeProgressCallback = (event: ProgressEvent) => void;
@@ -59,6 +60,20 @@ export async function runOptimization(
   let buffer = "";
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settleResolve = (result: OptimizeResult) => {
+      if (!settled) {
+        settled = true;
+        resolve(result);
+      }
+    };
+    const settleReject = (err: Error) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    };
+
     function pump() {
       reader!.read().then(({ done, value }) => {
         if (value) {
@@ -72,19 +87,27 @@ export async function runOptimization(
             } else if (eventType === "complete") {
               try {
                 const result: OptimizeResult = JSON.parse(data);
-                resolve(result);
-              } catch (e) { reject(e); }
+                settleResolve(result);
+              } catch (e) {
+                settleReject(e instanceof Error ? e : new Error(String(e)));
+              }
             } else if (eventType === "error") {
               try {
                 const err = JSON.parse(data);
-                reject(new Error(err.message || "Unknown error"));
-              } catch { reject(new Error("Unknown error")); }
+                settleReject(new Error(err.message || "Unknown error"));
+              } catch { settleReject(new Error("Unknown error")); }
             }
           });
         }
-        if (done) return;
+        if (done) {
+          // Stream ended without a terminal event — don't hang forever
+          settleReject(new Error("Optimization stream ended without a result"));
+          return;
+        }
         pump();
-      }).catch(reject);
+      }).catch((e) =>
+        settleReject(e instanceof Error ? e : new Error(String(e)))
+      );
     }
     pump();
   });

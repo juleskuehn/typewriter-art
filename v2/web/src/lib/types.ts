@@ -53,11 +53,11 @@ export interface HistoryItem {
 /** Center pane tab selection */
 export type CenterTab = "input" | "output" | "layers";
 
-/** Default configuration. */
+/** Default configuration (matches the Rust CLI defaults). */
 export const DEFAULT_CONFIG: OptimizeConfig = {
-  charset: "hermes-sm",
-  row_length: 20,
-  num_loops: 5,
+  charset: "sc-2",
+  row_length: 30,
+  num_loops: 15,
   init_mode: "random",
   asymmetry: 0.1,
   search: "simAnneal",
@@ -66,20 +66,39 @@ export const DEFAULT_CONFIG: OptimizeConfig = {
   shuffle: true,
 };
 
-/** Available charsets. */
+/**
+ * Available charsets (must match directories under `v2/assets/charsets/`).
+ * Labels show post-filter glyph count and glyph size (height×width),
+ * as loaded by the optimizer.
+ */
 export const CHARSETS = [
-  { value: "hermes-sm", label: "Hermes (small, 18×10)" },
-  { value: "hermes-md", label: "Hermes (medium, 28×16)" },
-  { value: "hermes", label: "Hermes (full)" },
-  { value: "sc-1", label: "SC-1 (87 chars)" },
-  { value: "sc-2", label: "SC-2 (175 chars, default)" },
-  { value: "sc-3", label: "SC-3 (265 chars)" },
+  { value: "sc-2", label: "Smith-Corona 2-tone (173 chars, 52×26)" },
+  { value: "sc-1", label: "Smith-Corona medium (87 chars, 50×26)" },
+  { value: "sc-3", label: "Smith-Corona 3-tone (263 chars, 50×26)" },
+  { value: "sc-round", label: "Smith-Corona round (7 chars, 50×26)" },
+  { value: "hermes-sm", label: "Hermes small (88 chars, 18×10)" },
+  { value: "hermes-md", label: "Hermes medium (88 chars, 28×16)" },
+  { value: "hermes", label: "Hermes full (88 chars, 52×30)" },
+  { value: "daisywriter-shrunken", label: "Daisywriter shrunken (95 chars, 32×16)" },
+  { value: "daisywriter", label: "Daisywriter full (95 chars, 82×42)" },
+  { value: "dw-no-chev", label: "Daisywriter no chevrons (91 chars, 32×16)" },
 ] as const;
 
-/** Available layer configs. */
+/**
+ * Available layer configs (must match keys in `v2/assets/layers.json`).
+ * Labels show the number of layers.
+ */
 export const LAYER_CONFIGS = [
-  { value: "1x1", label: "1×1 (single layer)" },
+  { value: "1x1", label: "1 layer" },
+  { value: "4x2", label: "4×2 (8 layers)" },
   { value: "4x1", label: "4×1 (4 layers)" },
-  { value: "4x2", label: "4×2 (8 layers, default)" },
   { value: "16x1", label: "16×1 (16 layers)" },
+  { value: "2Hx1", label: "2H×1 (2 layers, horizontal)" },
+  { value: "2Hx2", label: "2H×2 (4 layers, horizontal)" },
+  { value: "2Vx1", label: "2V×1 (2 layers, vertical)" },
+  { value: "2Vx2", label: "2V×2 (4 layers, vertical)" },
+  { value: "1x2", label: "1×2 (2 layers, same offset)" },
+  { value: "1x4", label: "1×4 (4 layers, same offset)" },
+  { value: "daisy_full", label: "Daisy full (50 layers)" },
+  { value: "daisy_x2", label: "Daisy ×2 (100 layers)" },
 ] as const;
