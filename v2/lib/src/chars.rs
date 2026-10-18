@@ -11,7 +11,9 @@ use crate::types::Chars;
 /// Batch-evaluate all characters against a background slice.
 ///
 /// Computes the asymmetric MSE for every character in the charset against
-/// the given background and target slice.
+/// the given background and target slice. `weight` is an optional per-pixel
+/// weight slice (same shape, e.g. "center focus") applied to the squared
+/// error before averaging; pass `None` for uniform weighting.
 ///
 /// Returns an array of MSE values, one per character: `(num_chars,)`.
 pub fn evaluate_all_chars(
@@ -19,6 +21,7 @@ pub fn evaluate_all_chars(
     target_slice: &Array2<f32>,
     chars: &Chars,
     asymmetry: f32,
+    weight: Option<&Array2<f32>>,
 ) -> Array1<f32> {
     let num_chars = chars.shape()[0];
     let h = chars.shape()[1];
@@ -44,7 +47,8 @@ pub fn evaluate_all_chars(
                 } else {
                     err
                 };
-                total += (weighted * weighted) as f64;
+                let w = weight.map_or(1.0, |m| m[[y, x]]);
+                total += (weighted * weighted) as f64 * w as f64;
             }
         }
 
@@ -69,7 +73,7 @@ mod tests {
             [[0.0, 1.0], [0.0, 1.0]], // dark on left
         ]);
 
-        let mses = evaluate_all_chars(&bg, &target, &chars, 0.0);
+        let mses = evaluate_all_chars(&bg, &target, &chars, 0.0, None);
         assert_eq!(mses.len(), 2);
         // Both should produce non-negative MSE
         assert!(mses[0] >= 0.0);

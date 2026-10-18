@@ -15,7 +15,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useOptimizerStore, useActiveItem } from "@/store/optimizer";
-import { CHARSETS, LAYER_CONFIGS } from "@/lib/types";
+import { CHARSETS, LAYER_CONFIGS, CENTER_FOCUSES } from "@/lib/types";
 import { Settings2, ChevronDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 
@@ -176,6 +176,29 @@ export function SidebarControls() {
           />
           Auto-align to character grid
         </label>
+
+        {/* Center focus */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-gray-500">Center focus</label>
+          <Select
+            value={config.center_focus ?? "soft"}
+            onValueChange={(v) =>
+              v && setConfig("center_focus", v as "off" | "soft" | "strong")
+            }
+            disabled={busy}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CENTER_FOCUSES.map((f) => (
+                <SelectItem key={f.value} value={f.value}>
+                  {f.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
         {/* Advanced */}
         <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>

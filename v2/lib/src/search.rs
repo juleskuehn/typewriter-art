@@ -21,6 +21,10 @@ use crate::types::{Chars, Image, SearchAlgorithm};
 ///
 /// Positions are processed in parallel with Rayon.
 ///
+/// `weights` is an optional per-pixel loss weight map covering the whole
+/// canvas ("center focus"); each position uses its slice of it. Pass `None`
+/// for uniform weighting.
+///
 /// Returns updated choices, updated mockup, total comparisons, and mean error.
 pub fn optimize_layer_pass(
     bg: &Image,
@@ -32,6 +36,7 @@ pub fn optimize_layer_pass(
     asymmetry: f32,
     mode: SearchAlgorithm,
     temperature: f32,
+    weights: Option<&Image>,
 ) -> (u64, f32) {
     let num_positions = choices.len();
     let num_cols = target.ncols() / chars.shape()[2];
@@ -61,13 +66,23 @@ pub fn optimize_layer_pass(
             let mockup_slice = mockup
                 .slice(s![y_start..y_end, x_start..x_end])
                 .to_owned();
+            let weight_slice = weights.map(|w| {
+                w.slice(s![y_start..y_end, x_start..x_end])
+                    .to_owned()
+            });
 
             // Compute current error
             let cur_composite = mockup_slice;
-            let cur_amse = asymmetric_mse(&target_slice, &cur_composite, asymmetry);
+            let cur_amse = asymmetric_mse(
+                &target_slice,
+                &cur_composite,
+                asymmetry,
+                weight_slice.as_ref(),
+            );
 
             // Batch-evaluate all characters
-            let all_mses = evaluate_all_chars(&bg_slice, &target_slice, chars, asymmetry);
+            let all_mses =
+                evaluate_all_chars(&bg_slice, &target_slice, chars, asymmetry, weight_slice.as_ref());
 
             // Select character using search strategy
             let (new_choice, new_composite, comparisons) = match mode {
@@ -139,7 +154,7 @@ mod tests {
         let bg = Image::from_elem((2, 2), 1.0);
         let target = Image::from_shape_vec((2, 2), vec![1.0, 0.5, 1.0, 0.5]).unwrap();
 
-        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0);
+        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0, None);
         let cur_amse = all_mses[1];
 
         let (choice, _composite, comparisons) =
@@ -155,7 +170,7 @@ mod tests {
         // Target matches char 2 (all 0.5)
         let target = Image::from_elem((2, 2), 0.5);
 
-        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0);
+        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0, None);
         let cur_amse = all_mses[1];
 
         let (choice, _composite, _comparisons) =
@@ -171,7 +186,7 @@ mod tests {
         let bg = Image::from_elem((2, 2), 1.0);
         let target = Image::from_shape_vec((2, 2), vec![1.0, 0.5, 1.0, 0.5]).unwrap();
 
-        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0);
+        let all_mses = evaluate_all_chars(&bg, &target, &chars, 0.0, None);
         let cur_amse = all_mses[1];
 
         let (choice, _composite, comparisons) =
@@ -273,21 +288,42 @@ pub fn simulated_annealing(
 ///
 /// Errors where the mockup is too light (err > 0) are penalized by `(1+asymmetry)`.
 /// This is critical because the multiplicative model can only darken pixels;
-/// once a region is too light, later layers can't fix it.
+/// once a region is too light, later layers can't fix it. `weight` is an
+/// optional per-pixel weight slice (same shape) applied before averaging.
 #[inline]
-pub fn asymmetric_mse(target: &Image, composite: &Image, asymmetry: f32) -> f32 {
+pub fn asymmetric_mse(
+    target: &Image,
+    composite: &Image,
+    asymmetry: f32,
+    weight: Option<&Image>,
+) -> f32 {
     let mut total: f64 = 0.0;
     let n = target.len();
 
     // Single-pass computation for better performance
-    for (&x, &y) in target.iter().zip(composite.iter()) {
-        let err = x - y;
-        let weighted = if err > 0.0 {
-            err * (1.0 + asymmetry)
-        } else {
-            err
-        };
-        total += (weighted * weighted) as f64;
+    match weight {
+        Some(w) => {
+            for ((&x, &y), &w) in target.iter().zip(composite.iter()).zip(w.iter()) {
+                let err = x - y;
+                let weighted = if err > 0.0 {
+                    err * (1.0 + asymmetry)
+                } else {
+                    err
+                };
+                total += (weighted * weighted) as f64 * w as f64;
+            }
+        }
+        None => {
+            for (&x, &y) in target.iter().zip(composite.iter()) {
+                let err = x - y;
+                let weighted = if err > 0.0 {
+                    err * (1.0 + asymmetry)
+                } else {
+                    err
+                };
+                total += (weighted * weighted) as f64;
+            }
+        }
     }
 
     (total / n as f64) as f32

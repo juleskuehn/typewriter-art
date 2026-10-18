@@ -13,16 +13,40 @@ use crate::types::Image;
 /// `data_range` is 1.0 for images in [0.0, 1.0]. Returns `f32::INFINITY` for
 /// identical images (skimage behavior).
 pub fn psnr(a: &Image, b: &Image, data_range: f32) -> f32 {
+    psnr_impl(a, b, None, data_range)
+}
+
+/// Weighted PSNR: like [`psnr`], but with per-pixel `weight` (same shape)
+/// emphasizing part of the image. The weighted MSE is normalized by `sum(w)`.
+pub fn psnr_weighted(a: &Image, b: &Image, weight: &Image, data_range: f32) -> f32 {
+    psnr_impl(a, b, Some(weight), data_range)
+}
+
+fn psnr_impl(a: &Image, b: &Image, weight: Option<&Image>, data_range: f32) -> f32 {
     assert_eq!(a.dim(), b.dim(), "images must have the same shape");
     let mut sum = 0.0f64;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        let d = f64::from(x) - f64::from(y);
-        sum += d * d;
+    let mut w_sum = 0.0f64;
+    match weight {
+        Some(w) => {
+            assert_eq!(w.dim(), a.dim(), "weights must have the same shape");
+            for ((&x, &y), &w) in a.iter().zip(b.iter()).zip(w.iter()) {
+                let d = f64::from(x) - f64::from(y);
+                sum += f64::from(w) * d * d;
+                w_sum += f64::from(w);
+            }
+        }
+        None => {
+            for (&x, &y) in a.iter().zip(b.iter()) {
+                let d = f64::from(x) - f64::from(y);
+                sum += d * d;
+                w_sum += 1.0;
+            }
+        }
     }
     if sum == 0.0 {
         return f32::INFINITY;
     }
-    let mse = sum / a.len() as f64;
+    let mse = sum / w_sum;
     (10.0 * (f64::from(data_range).powi(2) / mse).log10()) as f32
 }
 
@@ -33,6 +57,16 @@ pub fn psnr(a: &Image, b: &Image, data_range: f32) -> f32 {
 /// border cropped before averaging. `data_range` is 1.0 for images in
 /// [0.0, 1.0].
 pub fn ssim(a: &Image, b: &Image, data_range: f32) -> f32 {
+    ssim_impl(a, b, None, data_range)
+}
+
+/// Weighted SSIM: like [`ssim`], but the per-window SSIM map is averaged with
+/// per-pixel `weight` (same shape) instead of uniformly.
+pub fn ssim_weighted(a: &Image, b: &Image, weight: &Image, data_range: f32) -> f32 {
+    ssim_impl(a, b, Some(weight), data_range)
+}
+
+fn ssim_impl(a: &Image, b: &Image, weight: Option<&Image>, data_range: f32) -> f32 {
     assert_eq!(a.dim(), b.dim(), "images must have the same shape");
     let (h, w) = a.dim();
     let mut win = 7.min(h.min(w));
@@ -57,7 +91,7 @@ pub fn ssim(a: &Image, b: &Image, data_range: f32) -> f32 {
     // Crop the window border before averaging (skimage crops `pad` on all sides)
     let pad = (win - 1) / 2;
     let mut total = 0.0f64;
-    let mut count = 0usize;
+    let mut w_total = 0.0f64;
     for y in pad..(h - pad) {
         for x in pad..(w - pad) {
             let ux = f64::from(ux[[y, x]]);
@@ -68,11 +102,12 @@ pub fn ssim(a: &Image, b: &Image, data_range: f32) -> f32 {
 
             let num = (2.0 * ux * uy + c1) * (2.0 * vxy + c2);
             let den = (ux * ux + uy * uy + c1) * (vx + vy + c2);
-            total += num / den;
-            count += 1;
+            let w = weight.map_or(1.0, |m| f64::from(m[[y, x]]));
+            total += w * (num / den);
+            w_total += w;
         }
     }
-    (total / count as f64) as f32
+    (total / w_total) as f32
 }
 
 /// Separable box filter with reflect (half-sample symmetric) borders —
@@ -229,5 +264,32 @@ mod tests {
         let p = psnr(&a, &b, 1.0);
         assert!((s - 0.674806621).abs() < 1e-4, "ssim = {}, expected 0.674806621", s);
         assert!((p - 13.3884709).abs() < 1e-3, "psnr = {}, expected 13.3884709", p);
+    }
+
+    #[test]
+    fn test_weighted_metrics_ignore_zero_weight_region() {
+        // Identical in the left 11 columns, wildly different in the rightmost
+        // columns. The mismatch starts beyond the SSIM window reach (±3 px) of
+        // any weighted window center (weights end at x = 8), so with the right
+        // side zero-weighted both metrics must report a perfect match.
+        let a = Image::from_shape_fn((16, 24), |(_, x)| if x <= 10 { 0.3 } else { 0.2 });
+        let b = Image::from_shape_fn((16, 24), |(_, x)| if x <= 10 { 0.3 } else { 0.9 });
+        let w = Image::from_shape_fn((16, 24), |(_, x)| if x < 8 { 1.0 } else { 0.0 });
+
+        assert_eq!(psnr_weighted(&a, &b, &w, 1.0), f32::INFINITY);
+        assert!((ssim_weighted(&a, &b, &w, 1.0) - 1.0).abs() < 1e-5);
+
+        // Sanity: the unweighted metrics see the mismatch
+        assert!(psnr(&a, &b, 1.0) < 20.0);
+        assert!(ssim(&a, &b, 1.0) < 1.0);
+    }
+
+    #[test]
+    fn test_uniform_weights_match_unweighted() {
+        let a = Image::from_shape_fn((12, 10), |(y, x)| ((y * 10 + x) % 7) as f32 / 7.0);
+        let b = Image::from_shape_fn((12, 10), |(y, x)| ((y * 10 + x) % 5) as f32 / 5.0);
+        let ones = Image::from_elem((12, 10), 1.0);
+        assert!((psnr_weighted(&a, &b, &ones, 1.0) - psnr(&a, &b, 1.0)).abs() < 1e-4);
+        assert!((ssim_weighted(&a, &b, &ones, 1.0) - ssim(&a, &b, 1.0)).abs() < 1e-5);
     }
 }

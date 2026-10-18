@@ -100,10 +100,10 @@ fn optimize_inner(
     // Scored over the image content only — not the padding border.
     let content = padding.content_rect((target.nrows(), target.ncols()));
     let progress_tx = progress_tx.map(std::sync::Mutex::new);
-    let (target, alignment) = match config.align_override {
+    let (target, alignment, content) = match config.align_override {
         Some(t) => {
             log::info!("Using manual crop transform: {:?}", t);
-            let (aligned, _) =
+            let (aligned, score_rect) =
                 align::apply_crop(&target, &t, char_shape, content, config.align.steps);
             (
                 aligned,
@@ -112,6 +112,7 @@ fn optimize_inner(
                     steps: config.align.steps,
                     scores: Vec::new(),
                 }),
+                score_rect,
             )
         }
         None if config.align.enabled => {
@@ -133,10 +134,11 @@ fn optimize_inner(
                 &config.align,
                 config.asymmetry,
                 content,
+                config.center_focus,
                 false,
                 Some(&progress),
             );
-            let (aligned, _) = align::apply_crop(
+            let (aligned, score_rect) = align::apply_crop(
                 &target,
                 &search.result.best,
                 char_shape,
@@ -150,9 +152,9 @@ fn optimize_inner(
                 search.result.best.shift_y,
                 search.result.scores.first().map(|s| s.score).unwrap_or(0.0),
             );
-            (aligned, Some(search.result))
+            (aligned, Some(search.result), score_rect)
         }
-        None => (target, None),
+        None => (target, None, content),
     };
 
     let num_layers = layer_offsets.len();
@@ -178,6 +180,9 @@ fn optimize_inner(
 
     // Initialize mockup (all white)
     let mut mockup = Image::from_elem((out_h, out_w), 1.0f32);
+
+    // Spatial loss weights ("center focus"); None = uniform weighting
+    let loss_weights = crate::weights::container_map((out_h, out_w), content, config.center_focus);
 
     // Initialize choices
     let mut choices = ndarray::Array2::<u16>::zeros((num_layers, num_positions));
@@ -249,6 +254,7 @@ fn optimize_inner(
                 config.asymmetry,
                 config.search,
                 temperature,
+                loss_weights.as_ref(),
             );
 
             // Update choices
@@ -437,6 +443,7 @@ pub fn align_search(
         &config.align,
         config.asymmetry,
         content,
+        config.center_focus,
         keep_mockups,
         Some(&progress),
     ))

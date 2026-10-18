@@ -13,6 +13,8 @@ export interface OptimizeConfig {
   shuffle: boolean;
   /** Run the pre-optimization auto-alignment sweep (64-crop search). */
   align_enabled: boolean;
+  /** Spatial weighting of the loss and alignment score ("center focus"). */
+  center_focus: "off" | "soft" | "strong";
 }
 
 /** Statistics from the optimizer. */
@@ -106,7 +108,18 @@ export const DEFAULT_CONFIG: OptimizeConfig = {
   layers: "4x2",
   shuffle: true,
   align_enabled: true,
+  center_focus: "soft",
 };
+
+/**
+ * Center focus presets (must match `CenterFocus` in the Rust library).
+ * Labels describe the emphasis on the middle of the image.
+ */
+export const CENTER_FOCUSES = [
+  { value: "off", label: "Off (uniform)" },
+  { value: "soft", label: "Soft" },
+  { value: "strong", label: "Strong (fuzzy borders)" },
+] as const;
 
 /**
  * Available charsets (must match directories under `v2/assets/charsets/`).

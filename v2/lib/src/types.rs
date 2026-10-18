@@ -53,6 +53,54 @@ impl Padding {
     }
 }
 
+/// Spatial weighting of the loss and the auto-alignment score ("center focus").
+///
+/// Emphasizes the middle of the image over its edges and margins. For the
+/// alignment score this changes which crop wins; for the optimization loss it
+/// mainly stops charging edge characters for ink in the padding border —
+/// positions optimize their own tiles independently, so a slowly varying
+/// profile cannot reallocate effort between regions. See [`crate::weights`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CenterFocus {
+    /// Uniform weights (pixel parity with the paper's loss).
+    Off,
+    /// Gentle center emphasis; margins lightly de-emphasized.
+    Soft,
+    /// Strong center emphasis; margins nearly free (fuzzy borders).
+    Strong,
+}
+
+/// Parameters of the radial weight profile (see [`crate::weights`]).
+#[derive(Debug, Clone, Copy)]
+pub struct FocusPreset {
+    /// Weight at the corners of the content region.
+    pub floor: f32,
+    /// Gaussian sigma; the rect's edge midpoints sit at r = 1.
+    pub sigma: f32,
+    /// Weight outside the content region (padding border / margin).
+    pub padding: f32,
+}
+
+impl CenterFocus {
+    /// Profile parameters, or `None` for [`CenterFocus::Off`] (uniform).
+    pub fn preset(self) -> Option<FocusPreset> {
+        match self {
+            CenterFocus::Off => None,
+            CenterFocus::Soft => Some(FocusPreset {
+                floor: 0.25,
+                sigma: 0.65,
+                padding: 0.1,
+            }),
+            CenterFocus::Strong => Some(FocusPreset {
+                floor: 0.05,
+                sigma: 0.45,
+                padding: 0.0,
+            }),
+        }
+    }
+}
+
 /// One crop candidate for the auto-alignment sweep (paper §3.4).
 ///
 /// All fields are in step units: with `steps = 4` (the default) a value of 1
@@ -191,6 +239,8 @@ pub struct OptimizeConfig {
     pub init_mode: InitMode,
     /// Asymmetry factor for MSE (penalizes too-light regions).
     pub asymmetry: f32,
+    /// Spatial weighting of the loss and alignment score ("center focus").
+    pub center_focus: CenterFocus,
     /// Search algorithm.
     pub search: SearchAlgorithm,
     /// Initial temperature for simulated annealing.

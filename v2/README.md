@@ -57,6 +57,8 @@ Options:
   -n, --num-loops <N>        Optimization passes per layer (default: 15)
   -i, --init-mode <MODE>     random | blank (default: random)
   -a, --asymmetry <FLOAT>    MSE asymmetry, penalizes too-light (default: 0.1)
+      --center-focus <F>     Spatial weighting of the loss & alignment score:
+                             off | soft | strong (default: soft)
   -s, --search <ALGO>        simAnneal | greedy (default: simAnneal)
       --temp <FLOAT>         SA initial temperature (default: 0.001)
   -l, --layers <KEY>         Layer config from layers.json (default: 4x2)
@@ -105,6 +107,21 @@ Differences from the v1 code, on purpose: shift steps follow the paper (¼ char,
 not the v1 code's ⅛ char), the score weights SSIM by 4 (v1: `ssim + psnr`), the
 quick pass is an exact greedy pass instead of ANN-assisted placement, and the
 winner is applied automatically instead of requiring a manual re-run.
+
+## Center Focus
+
+`--center-focus off|soft|strong` (same toggle in the web UI) weights both the
+auto-alignment score and the optimization loss toward the middle of the image
+— a radial profile over the content, with the padding border/margin weighted
+down (`strong` lets edge characters spill ink into the margins for fuzzy
+borders; `off` is pixel parity with the paper's uniform loss).
+
+Where it matters: the alignment score is a global image metric, so weighting
+it changes which crop wins (this is the main lever). In the optimization loss,
+each grid position optimizes its own tile independently — there is no budget
+to reallocate between regions — so the effect is mainly that edge characters
+stop paying for ink in the padding, plus a mild bias toward the center-facing
+part of tiles that span the gradient.
 
 ## Performance
 

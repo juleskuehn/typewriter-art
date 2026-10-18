@@ -48,8 +48,8 @@ use crate::metrics;
 use crate::render::{combine_layers, compute_background, render_layer};
 use crate::search::optimize_layer_pass;
 use crate::types::{
-    AlignConfig, AlignmentResult, AlignmentScore, AlignmentSearch, Chars, CropTransform, Image,
-    LayerOffset, Layers, SearchAlgorithm,
+    AlignConfig, AlignmentResult, AlignmentScore, AlignmentSearch, CenterFocus, Chars,
+    CropTransform, Image, LayerOffset, Layers, SearchAlgorithm,
 };
 
 /// Progress callback: `(completed_candidates, total_candidates)`.
@@ -149,13 +149,17 @@ pub fn apply_crop(
 ///
 /// One blank-init greedy coordinate-descent cycle over all layers — the v2
 /// equivalent of v1's single `initOnly` placement pass. `passes` repeats the
-/// cycle over all layers.
+/// cycle over all layers. The loss uses the same "center focus" weighting as
+/// the main optimization, over `content` = `(y0, y1, x0, x1)` in target
+/// coordinates.
 pub fn quick_mockup(
     target: &Image,
     chars: &Chars,
     layer_offsets: &[LayerOffset],
     passes: u32,
     asymmetry: f32,
+    focus: CenterFocus,
+    content: (usize, usize, usize, usize),
 ) -> Image {
     let char_h = chars.shape()[1];
     let char_w = chars.shape()[2];
@@ -176,6 +180,7 @@ pub fn quick_mockup(
     let mut layers = Layers::from_elem((num_layers, out_shape.0, out_shape.1), 1.0);
     let mut choices = ndarray::Array2::<u16>::zeros((num_layers, num_positions));
     let mut mockup = Image::from_elem(out_shape, 1.0);
+    let weights = crate::weights::container_map(out_shape, content, focus);
 
     for _ in 0..passes.max(1) {
         for (layer_num, &layer_offset) in layer_offsets.iter().enumerate() {
@@ -191,6 +196,7 @@ pub fn quick_mockup(
                 asymmetry,
                 SearchAlgorithm::Greedy,
                 0.0,
+                weights.as_ref(),
             );
             choices
                 .index_axis_mut(ndarray::Axis(0), layer_num)
@@ -222,19 +228,39 @@ fn evaluate_candidate(
     config: &AlignConfig,
     asymmetry: f32,
     content: (usize, usize, usize, usize),
+    focus: CenterFocus,
     t: &CropTransform,
     keep_mockup: bool,
 ) -> (AlignmentScore, Option<Image>) {
     let char_shape = (chars.shape()[1], chars.shape()[2]);
     let (candidate_target, (y0, y1, x0, x1)) =
         apply_crop(target, t, char_shape, content, config.steps);
-    let mockup = quick_mockup(&candidate_target, chars, layer_offsets, config.passes, asymmetry);
+    let mockup = quick_mockup(
+        &candidate_target,
+        chars,
+        layer_offsets,
+        config.passes,
+        asymmetry,
+        focus,
+        (y0, y1, x0, x1),
+    );
 
     let mockup_scored = mockup.slice(s![y0..y1, x0..x1]).to_owned();
     let target_scored = candidate_target.slice(s![y0..y1, x0..x1]).to_owned();
 
-    let psnr = metrics::psnr(&target_scored, &mockup_scored, 1.0);
-    let ssim = metrics::ssim(&target_scored, &mockup_scored, 1.0);
+    // Score the content only, with the same "center focus" weighting the
+    // optimization uses (None = uniform).
+    let score_weights = crate::weights::focus_map((y1 - y0, x1 - x0), focus);
+    let (psnr, ssim) = match score_weights {
+        Some(ref w) => (
+            metrics::psnr_weighted(&target_scored, &mockup_scored, w, 1.0),
+            metrics::ssim_weighted(&target_scored, &mockup_scored, w, 1.0),
+        ),
+        None => (
+            metrics::psnr(&target_scored, &mockup_scored, 1.0),
+            metrics::ssim(&target_scored, &mockup_scored, 1.0),
+        ),
+    };
 
     (
         AlignmentScore {
@@ -269,6 +295,7 @@ pub fn search(
     config: &AlignConfig,
     asymmetry: f32,
     content: (usize, usize, usize, usize),
+    focus: CenterFocus,
     keep_mockups: bool,
     progress: Option<&AlignProgressFn<'_>>,
 ) -> AlignmentSearch {
@@ -306,6 +333,7 @@ pub fn search(
                     config,
                     asymmetry,
                     content,
+                    focus,
                     t,
                     keep_mockups,
                 );
@@ -338,6 +366,7 @@ pub fn search(
                         config,
                         asymmetry,
                         content,
+                        focus,
                         t,
                         keep_mockups,
                     );
@@ -489,6 +518,7 @@ mod tests {
             &config,
             0.1,
             (0, 8, 0, 8),
+            CenterFocus::Off,
             true,
             Some(&progress),
         );
@@ -518,16 +548,61 @@ mod tests {
             refine_top: 3,
         };
         // One layer → screening is already the full evaluation
-        let result = search(&target, &chars, &[(0, 0)], &config, 0.1, (0, 8, 0, 8), false, None);
+        let result = search(
+            &target,
+            &chars,
+            &[(0, 0)],
+            &config,
+            0.1,
+            (0, 8, 0, 8),
+            CenterFocus::Off,
+            false,
+            None,
+        );
         assert_eq!(result.result.scores.len(), 8);
         assert!(result.result.scores.iter().all(|s| !s.refined));
+    }
+
+    #[test]
+    fn test_search_with_center_focus() {
+        // Weighted scoring path: scores must be finite and sorted
+        let chars = test_chars();
+        let target = Image::from_elem((8, 8), 0.6);
+        let config = AlignConfig {
+            enabled: true,
+            steps: 2,
+            passes: 1,
+            ssim_weight: 4.0,
+            refine_top: 0,
+        };
+        let result = search(
+            &target,
+            &chars,
+            &[(0, 0)],
+            &config,
+            0.1,
+            (0, 8, 0, 8),
+            CenterFocus::Strong,
+            false,
+            None,
+        );
+        assert_eq!(result.result.scores.len(), 8);
+        assert!(result.result.scores.iter().all(|s| s.score.is_finite()));
     }
 
     #[test]
     fn test_quick_mockup_shape() {
         let chars = test_chars();
         let target = Image::from_elem((8, 8), 0.6);
-        let mockup = quick_mockup(&target, &chars, &[(0, 0), (2, 2)], 1, 0.1);
+        let mockup = quick_mockup(
+            &target,
+            &chars,
+            &[(0, 0), (2, 2)],
+            1,
+            0.1,
+            CenterFocus::Off,
+            (0, 8, 0, 8),
+        );
         assert_eq!(mockup.dim(), (10, 10), "includes max layer offsets");
     }
 }

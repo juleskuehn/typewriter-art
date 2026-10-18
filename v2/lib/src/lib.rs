@@ -7,7 +7,7 @@
 //! ## Quick Usage
 //!
 //! ```rust,no_run
-//! use typewriter_art::{optimize, AlignConfig, OptimizeConfig, InitMode, SearchAlgorithm};
+//! use typewriter_art::{optimize, AlignConfig, CenterFocus, OptimizeConfig, InitMode, SearchAlgorithm};
 //!
 //! let config = OptimizeConfig {
 //!     charset: "hermes-sm".into(),
@@ -16,6 +16,7 @@
 //!     num_loops: 5,
 //!     init_mode: InitMode::Random,
 //!     asymmetry: 0.1,
+//!     center_focus: CenterFocus::Soft,
 //!     search: SearchAlgorithm::SimAnneal,
 //!     init_temp: 0.001,
 //!     layers: "4x2".into(),
@@ -58,11 +59,12 @@ pub mod render;
 pub mod resize;
 pub mod search;
 pub mod types;
+pub mod weights;
 
 // Re-export main public API
 pub use optimize::{align_search, optimize, optimize_with_progress, ProgressEvent};
 pub use types::{
-    AlignConfig, AlignmentResult, AlignmentScore, CharsetConfig, CropTransform, InitMode,
-    OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
+    AlignConfig, AlignmentResult, AlignmentScore, CenterFocus, CharsetConfig, CropTransform,
+    InitMode, OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
 };
 pub use export::{build_json_result, image_to_base64_png, JsonResult};

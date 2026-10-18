@@ -30,6 +30,7 @@ const config = {
   layers: "1x2",
   shuffle: true,
   align_enabled: true,
+  center_focus: "soft",
 };
 
 // 2. Run through the real client SSE code

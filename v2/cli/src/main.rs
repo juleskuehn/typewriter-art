@@ -9,7 +9,7 @@ use std::sync::mpsc;use std::thread;
 use clap::Parser;
 use typewriter_art::{
     align_search, build_json_result, export, optimize, optimize_with_progress, AlignConfig,
-    CropTransform, InitMode, OptimizeConfig, SearchAlgorithm,
+    CenterFocus, CropTransform, InitMode, OptimizeConfig, SearchAlgorithm,
 };
 
 fn parse_search(s: &str) -> Result<SearchAlgorithm, String> {
@@ -31,6 +31,18 @@ fn parse_init_mode(s: &str) -> Result<InitMode, String> {
         "blank" | "b" => Ok(InitMode::Blank),
         _ => Err(format!(
             "Invalid init mode '{}'. Use 'random' or 'blank'",
+            s
+        )),
+    }
+}
+
+fn parse_center_focus(s: &str) -> Result<CenterFocus, String> {
+    match s.to_lowercase().as_str() {
+        "off" | "none" | "uniform" => Ok(CenterFocus::Off),
+        "soft" => Ok(CenterFocus::Soft),
+        "strong" => Ok(CenterFocus::Strong),
+        _ => Err(format!(
+            "Invalid center focus '{}'. Use 'off', 'soft' or 'strong'",
             s
         )),
     }
@@ -76,6 +88,12 @@ struct Args {
     /// Asymmetry of MSE function (penalizes too-light regions)
     #[arg(short = 'a', long, default_value = "0.1")]
     asymmetry: f32,
+
+    /// Center focus: spatial weighting of the loss and alignment score,
+    /// emphasizing the middle of the image over edges and margins
+    /// (off | soft | strong)
+    #[arg(long = "center-focus", default_value = "soft", value_parser = parse_center_focus)]
+    center_focus: CenterFocus,
 
     /// Search algorithm: simAnneal or greedy
     #[arg(short = 's', long, default_value = "simAnneal", value_parser = parse_search)]
@@ -204,6 +222,7 @@ fn main() -> anyhow::Result<()> {
         num_loops: args.num_loops,
         init_mode: args.init_mode,
         asymmetry: args.asymmetry,
+        center_focus: args.center_focus,
         search: args.search,
         init_temp: args.init_temp,
         shuffle: !args.no_shuffle,
