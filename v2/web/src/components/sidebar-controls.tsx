@@ -25,6 +25,7 @@ export function SidebarControls() {
   const optimize = useOptimizerStore((s) => s.optimize);
   const [busy, setBusy] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!activeItem) {
     return (
@@ -40,10 +41,12 @@ export function SidebarControls() {
 
   const handleOptimize = async () => {
     setBusy(true);
+    setError(null);
     try {
       await optimize();
-    } catch {
-      // error shown by store
+    } catch (err) {
+      // Surfaced next to the button — previously this vanished into the console.
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -221,11 +224,24 @@ export function SidebarControls() {
           </div>
         )}
 
+        {activeItem.sourceImageLost && (
+          <p className="text-xs text-amber-600">
+            The full-size image wasn&apos;t kept after the last page reload, so this
+            entry can&apos;t be re-optimized. Re-upload the image to run it again.
+          </p>
+        )}
+
+        {error && (
+          <p className="text-xs text-red-600" role="alert">
+            {error}
+          </p>
+        )}
+
         <Button
           className="w-full"
           size="sm"
           onClick={handleOptimize}
-          disabled={busy}
+          disabled={busy || activeItem.sourceImageLost}
         >
           {busy ? (
             <span className="flex items-center gap-1.5">

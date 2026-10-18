@@ -33,14 +33,61 @@ function makeThumbnail(dataUrl: string): Promise<string> {
   });
 }
 
-/** Minimal persisted data — thumbnails + config + stats only (no full images). */
+/**
+ * Persistence budgeting.
+ *
+ * localStorage is a ~5 MB synchronous string store, and zustand's persist
+ * middleware calls `setItem()` after **every** `set()`. A history item can carry
+ * a full source image plus a full-resolution mockup, and `optimize()` calls
+ * `set()` once per progress event — so a single 480-event run used to serialize
+ * the entire history 480 times and then throw QuotaExceededError.
+ *
+ * Three defences:
+ *  1. `toPersisted` keeps the payload under a fixed byte budget, dropping the
+ *     oldest items first (they survive in the live session, just not a reload).
+ *  2. Persistence is suspended during a run so progress ticks cost O(1) and the
+ *     result is written exactly once, when the run finishes.
+ *  3. `persistStorage.setItem` never throws — on quota pressure the write is
+ *     skipped rather than breaking the run.
+ */
+const STORAGE_KEY = "typewriter-art-history";
+
+/** Stay comfortably under the typical 5 MB localStorage quota. */
+const PERSIST_BUDGET_BYTES = 3_000_000;
+
+/**
+ * Per-item cap on the source image. Matches the original rule (`< 500_000`),
+ * and guarantees one oversized upload cannot starve every other entry.
+ * Larger uploads are simply not re-optimizable after a reload.
+ */
+const MAX_SOURCE_IMAGE_CHARS = 500_000;
+
+/**
+ * Rough persisted size of a string field. Base64 is ~1 byte per char and the
+ * JSON escaping it needs is negligible, so `.length` is a good enough estimate;
+ * the try/catch in `persistStorage` covers the tail risk.
+ */
+function estimateChars(value: string | undefined): number {
+  return value ? value.length : 0;
+}
+
+/** True while an optimization run is in flight — see note above. */
+let persistSuspended = false;
+
+/** Last serialized snapshot, reused while persistence is suspended. */
+let lastSnapshot: PersistedState | null = null;
+
+/** Minimal persisted data — bounded thumbnails, config and stats. */
 interface PersistedItem {
   id: string;
   thumbnail: string;
-  /** Full image stored in memory only; on reload, we use thumbnail. */
+  /**
+   * Full image, kept only while the budget allows. Absent means we only have
+   * the thumbnail after a reload — see `sourceImageLost`.
+   */
   imageDataUrl?: string;
   config: OptimizeConfig;
-  /** Stats + mockup thumbnail only — full layers not persisted. */
+  /** Stats + mockup only — full layers are never persisted. */
   resultMeta: {
     stats: OptimizeResult["stats"];
     mockup_base64: string;
@@ -49,7 +96,111 @@ interface PersistedItem {
     error_over_time: number[];
   } | null;
   timestamp: number;
+  /** Set when the full source image had to be dropped to stay in budget. */
+  sourceImageLost?: boolean;
 }
+
+interface PersistedState {
+  history: PersistedItem[];
+}
+
+/**
+ * History items in persistence order (newest first), trimmed to the byte
+ * budget.
+ *
+ * Allocation is two passes so one oversized field cannot starve the rest:
+ *  - Pass 1 gives every entry its thumbnail and its result — that is the work
+ *    the user actually waited for and what the UI shows.
+ *  - Pass 2 spends what is left on source images (newest first), which are only
+ *    needed to re-optimize and can be re-uploaded.
+ */
+function toPersisted(history: HistoryItem[]): PersistedItem[] {
+  const out: PersistedItem[] = [];
+  let budget = PERSIST_BUDGET_BYTES;
+
+  // Pass 1 — thumbnails and results.
+  for (const h of history) {
+    const item: PersistedItem = {
+      id: h.id,
+      thumbnail: h.thumbnail,
+      config: h.config,
+      resultMeta: null,
+      timestamp: h.timestamp,
+      sourceImageLost: true,
+    };
+
+    let size = estimateChars(h.thumbnail) + 256; // 256 ≈ id/config/timestamp JSON
+
+    if (h.result) {
+      const mockup = estimateChars(h.result.mockup_base64);
+      const curve = h.result.error_over_time.length * 24; // number + separators
+      if (size + mockup + curve <= budget) {
+        item.resultMeta = {
+          stats: h.result.stats,
+          mockup_base64: h.result.mockup_base64,
+          num_rows: h.result.num_rows,
+          num_cols: h.result.num_cols,
+          error_over_time: h.result.error_over_time,
+        };
+        size += mockup + curve;
+      }
+    }
+
+    // Not even room for the thumbnail — everything older is larger still.
+    if (size > budget) break;
+
+    budget -= size;
+    out.push(item);
+  }
+
+  // Pass 2 — source images, newest first, each individually capped.
+  for (let i = 0; i < out.length; i++) {
+    // Already degraded: `imageDataUrl` is just the ~200px thumbnail at this
+    // point. Never re-assert it as a real source image, or the next reload
+    // would silently "restore" a preview and allow optimizing it.
+    if (history[i].sourceImageLost) continue;
+    const src = history[i].imageDataUrl;
+    if (src === history[i].thumbnail) continue;
+    const srcSize = estimateChars(src);
+    if (!src || srcSize > MAX_SOURCE_IMAGE_CHARS || srcSize > budget) continue;
+    out[i].imageDataUrl = src;
+    out[i].sourceImageLost = false;
+    budget -= srcSize;
+  }
+
+  return out;
+}
+
+/**
+ * Direct `PersistStorage` rather than `createJSONStorage`, so the stringify
+ * happens here and can be skipped entirely while a run is in flight.
+ */
+const persistStorage = {
+  getItem: (name: string): { state: PersistedState; version?: number } | null => {
+    try {
+      const raw = localStorage.getItem(name);
+      return raw ? (JSON.parse(raw) as { state: PersistedState; version?: number }) : null;
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name: string, value: { state: PersistedState; version?: number }): void => {
+    if (persistSuspended) return;
+    try {
+      localStorage.setItem(name, JSON.stringify(value));
+    } catch {
+      // QuotaExceededError (or private-mode storage) — losing persisted history
+      // is far better than failing the optimization the user just waited for.
+    }
+  },
+  removeItem: (name: string): void => {
+    try {
+      localStorage.removeItem(name);
+    } catch {
+      // ignore
+    }
+  },
+};
 
 interface OptimizerStore {
   history: HistoryItem[];
@@ -98,6 +249,7 @@ export const useOptimizerStore = create<OptimizerStore>()(
           id,
           thumbnail,
           imageDataUrl: dataUrl,
+          sourceImageLost: false,
           config: { ...DEFAULT_CONFIG },
           result: null,
           timestamp: Date.now(),
@@ -144,9 +296,21 @@ export const useOptimizerStore = create<OptimizerStore>()(
         const item = get().history.find((h) => h.id === activeId);
         if (!item) return;
 
+        // Refuse to optimize a degraded thumbnail. After a reload we may only
+        // still have the ~200px preview, which would silently produce a much
+        // worse result than the one on screen — ask for a re-upload instead.
+        if (item.sourceImageLost) {
+          throw new Error(
+            "The full-size image for this entry was not kept after a page reload. Re-upload the image to optimize it."
+          );
+        }
+
         // Errors for the current run only — never append to a previous run's curve
         const runErrors: number[] = [];
 
+        // Suspend persistence for the duration of the run: every progress event
+        // calls set(), and each one would otherwise serialize the whole history.
+        persistSuspended = true;
         try {
           const result: OptimizeResult = await runOptimization(
             item.imageDataUrl,
@@ -180,6 +344,9 @@ export const useOptimizerStore = create<OptimizerStore>()(
             }
           );
 
+          // Re-enable persistence before the final set() so the completed
+          // result is written exactly once, here.
+          persistSuspended = false;
           set((s) => ({
             history: s.history.map((h) =>
               h.id === activeId
@@ -191,6 +358,8 @@ export const useOptimizerStore = create<OptimizerStore>()(
         } catch (err) {
           console.error("Optimization failed:", err);
           throw err;
+        } finally {
+          persistSuspended = false;
         }
       },
 
@@ -211,31 +380,15 @@ export const useOptimizerStore = create<OptimizerStore>()(
       },
     }),
     {
-      name: "typewriter-art-history",
-      // Only persist metadata + thumbnails — no full images to stay under quota
-      partialize: (state) => ({
-        history: state.history.map((h) => ({
-          id: h.id,
-          thumbnail: h.thumbnail,
-          // Keep the full source image when small enough — after reload,
-          // re-optimizing would otherwise silently use the thumbnail.
-          imageDataUrl:
-            h.imageDataUrl && h.imageDataUrl.length < 500_000
-              ? h.imageDataUrl
-              : undefined,
-          config: h.config,
-          resultMeta: h.result
-            ? {
-                stats: h.result.stats,
-                mockup_base64: h.result.mockup_base64,
-                num_rows: h.result.num_rows,
-                num_cols: h.result.num_cols,
-                error_over_time: h.result.error_over_time,
-              }
-            : null,
-          timestamp: h.timestamp,
-        })),
-      }),
+      name: STORAGE_KEY,
+      storage: persistStorage,
+      // Build a budgeted snapshot instead of persisting the raw history.
+      partialize: (state) => {
+        // O(1) during a run — see `persistSuspended`.
+        if (persistSuspended) return lastSnapshot ?? { history: [] };
+        lastSnapshot = { history: toPersisted(state.history) };
+        return lastSnapshot;
+      },
       // Rehydrate: reconstruct full HistoryItem from persisted data
       merge: (persisted: unknown, current) => {
         const p = persisted as {
@@ -243,25 +396,34 @@ export const useOptimizerStore = create<OptimizerStore>()(
         };
         if (!p?.history) return current as OptimizerStore;
 
-        const rehydrated: HistoryItem[] = p.history.map((pi) => ({
-          id: pi.id,
-          thumbnail: pi.thumbnail,
-          imageDataUrl: pi.imageDataUrl ?? pi.thumbnail, // fall back to thumbnail
-          config: pi.config ?? { ...DEFAULT_CONFIG },
-          result: pi.resultMeta
-            ? {
-                mockup_base64: pi.resultMeta.mockup_base64,
-                layers_base64: [], // layers not persisted — will be empty
-                num_rows: pi.resultMeta.num_rows,
-                num_cols: pi.resultMeta.num_cols,
-                fractional_offsets: [],
-                stats: pi.resultMeta.stats,
-                error_over_time: pi.resultMeta.error_over_time,
-                choices: {},
-              }
-            : null,
-          timestamp: pi.timestamp ?? 0,
-        }));
+        const rehydrated: HistoryItem[] = p.history.map((pi) => {
+          // A "source" that is byte-identical to the thumbnail is a degraded
+          // fallback, not a real upload — treat it as lost even if an older
+          // build recorded `sourceImageLost: false`. This self-heals records
+          // that were persisted before the per-item cap existed.
+          const degraded = !pi.imageDataUrl || pi.imageDataUrl === pi.thumbnail;
+          return {
+            id: pi.id,
+            thumbnail: pi.thumbnail,
+            // Used for display only; `sourceImageLost` blocks re-optimizing.
+            imageDataUrl: pi.imageDataUrl ?? pi.thumbnail,
+            sourceImageLost: degraded || pi.sourceImageLost === true,
+            config: pi.config ?? { ...DEFAULT_CONFIG },
+            result: pi.resultMeta
+              ? {
+                  mockup_base64: pi.resultMeta.mockup_base64,
+                  layers_base64: [], // layers not persisted — will be empty
+                  num_rows: pi.resultMeta.num_rows,
+                  num_cols: pi.resultMeta.num_cols,
+                  fractional_offsets: [],
+                  stats: pi.resultMeta.stats,
+                  error_over_time: pi.resultMeta.error_over_time,
+                  choices: {},
+                }
+              : null,
+            timestamp: pi.timestamp ?? 0,
+          };
+        });
 
         return {
           ...(current as OptimizerStore),

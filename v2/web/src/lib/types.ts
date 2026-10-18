@@ -40,8 +40,20 @@ export interface HistoryItem {
   id: string;
   /** Small thumbnail (resized, ~200px wide, base64 PNG) */
   thumbnail: string;
-  /** Full-resolution image data URL */
+  /**
+   * Image data URL used for display and optimization.
+   *
+   * Full resolution in a live session. After a page reload this may be only the
+   * ~200px thumbnail, because localStorage has a ~5 MB quota and we cannot keep
+   * every source image. When that happens `sourceImageLost` is set.
+   */
   imageDataUrl: string;
+  /**
+   * True when `imageDataUrl` is a degraded thumbnail rather than the original
+   * upload. Re-optimizing would silently produce a much worse result, so the UI
+   * blocks it and asks for a re-upload.
+   */
+  sourceImageLost?: boolean;
   /** The config last used for this image */
   config: OptimizeConfig;
   /** The optimization result, if one exists */
