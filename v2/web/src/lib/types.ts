@@ -11,6 +11,8 @@ export interface OptimizeConfig {
   init_temp: number;
   layers: string;
   shuffle: boolean;
+  /** Run the pre-optimization auto-alignment sweep (64-crop search). */
+  align_enabled: boolean;
 }
 
 /** Statistics from the optimizer. */
@@ -23,6 +25,31 @@ export interface OptimizeStats {
 /** Choices grid: dict of layer key → 2D array of character indices. */
 export type ChoicesGrid = Record<string, number[][]>;
 
+/** One crop candidate from the auto-alignment sweep (step units, 4 = 1 char). */
+export interface CropTransform {
+  zoom: number;
+  shift_x: number;
+  shift_y: number;
+}
+
+/** Scored result for one alignment candidate. */
+export interface AlignmentScore {
+  transform: CropTransform;
+  psnr: number;
+  ssim: number;
+  score: number;
+  /** True when rescored with the full layer stack (two-stage sweep). */
+  refined: boolean;
+}
+
+/** Outcome of the auto-alignment sweep. */
+export interface AlignmentResult {
+  best: CropTransform;
+  steps: number;
+  /** All candidates, sorted best-first. */
+  scores: AlignmentScore[];
+}
+
 /** Full result from the optimizer. */
 export interface OptimizeResult {
   mockup_base64: string;
@@ -33,6 +60,8 @@ export interface OptimizeResult {
   stats: OptimizeStats;
   error_over_time: number[];
   choices: ChoicesGrid;
+  /** Auto-alignment outcome, when the sweep ran. */
+  alignment?: AlignmentResult;
 }
 
 /** A single item in the image history (persisted to localStorage). */
@@ -76,6 +105,7 @@ export const DEFAULT_CONFIG: OptimizeConfig = {
   init_temp: 0.001,
   layers: "4x2",
   shuffle: true,
+  align_enabled: true,
 };
 
 /**

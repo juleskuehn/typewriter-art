@@ -26,6 +26,7 @@ function buildArgs(config: OptimizeConfig, imagePath: string, outDir: string): s
     "--stream",
   ];
   if (!config.shuffle) args.push("--no-shuffle");
+  if (!config.align_enabled) args.push("--no-align");
   return args;
 }
 
@@ -145,8 +146,8 @@ function createSSEStream(
         if (parsed.type === "complete") {
           emitSSE("complete", JSON.stringify(parsed.result));
           endStream();
-        } else if (parsed.loop_num !== undefined) {
-          // Progress event
+        } else if (parsed.type === "align" || parsed.type === "loop") {
+          // Progress event (alignment sweep or layer pass)
           emitSSE("progress", line);
         }
       } catch {

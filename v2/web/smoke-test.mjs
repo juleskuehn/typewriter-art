@@ -29,6 +29,7 @@ const config = {
   init_temp: 0.001,
   layers: "1x2",
   shuffle: true,
+  align_enabled: true,
 };
 
 // 2. Run through the real client SSE code
@@ -36,8 +37,12 @@ const events = [];
 const result = await runOptimization(dataUrl, config, (e) => events.push(e));
 
 console.log("progress events:", events.length);
+console.log(
+  "align events:",
+  events.filter((e) => e.type === "align").length
+);
 console.log("mockup previews:", events.filter((e) => e.mockup_b64).length);
-console.log("errors:", events.map((e) => e.error));
+console.log("errors:", events.filter((e) => e.type !== "align").map((e) => e.error));
 console.log("layers:", result.layers_base64.length,
   "offsets:", JSON.stringify(result.fractional_offsets),
   "grid:", result.num_rows + "x" + result.num_cols,
@@ -45,6 +50,12 @@ console.log("layers:", result.layers_base64.length,
 console.log("mockup png magic ok:",
   Buffer.from(result.mockup_base64, "base64").subarray(0, 4).toString("hex") === "89504e47");
 console.log("stats:", JSON.stringify(result.stats));
+console.log(
+  "alignment:",
+  result.alignment
+    ? `best ${JSON.stringify(result.alignment.best)} of ${result.alignment.scores.length}`
+    : "none"
+);
 
 // 3. Run the real ZIP download code, intercepting the browser download
 globalThis.document = {

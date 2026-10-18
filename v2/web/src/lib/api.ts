@@ -3,7 +3,20 @@ import type { OptimizeConfig, OptimizeResult } from "@/lib/types";
 /**
  * Progress event from the SSE stream (before completion).
  */
-export interface ProgressEvent {
+export type ProgressEvent = AlignProgressEvent | LoopProgressEvent;
+
+/** One auto-alignment candidate finished evaluating. */
+export interface AlignProgressEvent {
+  type: "align";
+  /** Candidates evaluated so far. */
+  candidate: number;
+  /** Total evaluations in the sweep (candidates + refinements). */
+  total: number;
+}
+
+/** One layer optimization pass finished. */
+export interface LoopProgressEvent {
+  type: "loop";
   loop_num: number;
   num_loops: number;
   layer_num: number;

@@ -378,6 +378,11 @@ Each character has precomputed statistics: mean darkness, variance, etc. Since `
 
 ### 5.4 Optimized Cropping / Auto-Alignment (NEW FEATURE)
 
+**Status: implemented** (see `v2/lib/src/align.rs`, `v2/lib/src/metrics.rs`, and
+the “Auto-Alignment” section of `v2/README.md`). The sweep runs in two stages —
+single-pass screening of all 64 candidates (v1 parity), then full-layer-stack
+rescoring of the top N — which keeps the cost to a few seconds.
+
 The paper describes a preprocessing step NOT in the current code: **auto-alignment** of the target image to the character grid. This tests 64 different crops (combinations of x/y translation by {0, 0.25, 0.5, 0.75} × charWidth/charHeight, and scaling by small fractions), runs a single greedy optimization cycle for each, then picks the crop that maximizes `SSIM × 4 + PSNR`.
 
 For v2, we should include this. It's expensive (10 minutes per the paper) but highly effective at small sizes. Implementation:

@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::sync::mpsc;use std::thread;
 
 use clap::Parser;
-use typewriter_art::{build_json_result, optimize, optimize_with_progress, export, InitMode, OptimizeConfig, SearchAlgorithm};
+use typewriter_art::{
+    align_search, build_json_result, export, optimize, optimize_with_progress, AlignConfig,
+    CropTransform, InitMode, OptimizeConfig, SearchAlgorithm,
+};
 
 fn parse_search(s: &str) -> Result<SearchAlgorithm, String> {
     match s.to_lowercase().as_str() {
@@ -104,12 +107,55 @@ struct Args {
     json: bool,
 
     /// Stream progress as NDJSON lines to stdout (for SSE integration).
-    /// Each line is a JSON object: {"loop_num":1,"num_loops":15,"layer_num":3,
-    /// "num_layers":8,"error":0.042,"mockup_b64":"..."} (mockup_b64 only on the
-    /// first layer), followed by a final line {"type":"complete","result":{...}}.
-    /// Implies --json.
+    /// Each line is a JSON object with a "type" tag: {"type":"align",
+    /// "candidate":3,"total":64} during the auto-alignment sweep, or
+    /// {"type":"loop","loop_num":1,"num_loops":15,"layer_num":3,
+    /// "num_layers":8,"error":0.042,"mockup_b64":"..."} after each layer pass
+    /// (mockup_b64 only on the first layer), followed by a final line
+    /// {"type":"complete","result":{...}}. Implies --json.
     #[arg(long = "stream", default_value = "false")]
     stream: bool,
+
+    /// Disable the pre-optimization auto-alignment sweep (enabled by default).
+    /// The sweep tries 64 small zoom/shift crops of the target, runs a quick
+    /// greedy pass on each, and applies the crop that maximizes SSIM×4 + PSNR.
+    #[arg(long = "no-align")]
+    no_align: bool,
+
+    /// Only run the auto-alignment sweep: score every crop, write
+    /// alignment_scores.json plus one quick mockup per candidate, then exit
+    /// without optimizing.
+    #[arg(long = "align-only")]
+    align_only: bool,
+
+    /// Auto-alignment steps per parameter (N gives N³ candidates; default 4 = 64)
+    #[arg(long = "align-steps", default_value = "4")]
+    align_steps: u32,
+
+    /// Quick greedy passes per alignment candidate (paper: 1)
+    #[arg(long = "align-passes", default_value = "1")]
+    align_passes: u32,
+
+    /// Alignment score weight: score = SSIM × weight + PSNR (paper: 4)
+    #[arg(long = "align-ssim-weight", default_value = "4.0")]
+    align_ssim_weight: f32,
+
+    /// Two-stage sweep: rescore the top N candidates with the full layer stack
+    /// (0 = rank all candidates by the cheap single-pass screen alone)
+    #[arg(long = "align-refine-top", default_value = "8")]
+    align_refine_top: u32,
+
+    /// Manual crop transform (skips the sweep): zoom step
+    #[arg(long = "zoom")]
+    zoom: Option<u32>,
+
+    /// Manual crop transform (skips the sweep): horizontal shift step
+    #[arg(long = "shift-x")]
+    shift_x: Option<u32>,
+
+    /// Manual crop transform (skips the sweep): vertical shift step
+    #[arg(long = "shift-y")]
+    shift_y: Option<u32>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -140,6 +186,16 @@ fn main() -> anyhow::Result<()> {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("results"));
 
+    let align_override = if args.zoom.is_some() || args.shift_x.is_some() || args.shift_y.is_some() {
+        Some(CropTransform {
+            zoom: args.zoom.unwrap_or(0),
+            shift_x: args.shift_x.unwrap_or(0),
+            shift_y: args.shift_y.unwrap_or(0),
+        })
+    } else {
+        None
+    };
+
     let config = OptimizeConfig {
         charset: args.charset,
         target: args.target,
@@ -152,6 +208,14 @@ fn main() -> anyhow::Result<()> {
         init_temp: args.init_temp,
         shuffle: !args.no_shuffle,
         out_file: out_file.to_string_lossy().to_string(),
+        align: AlignConfig {
+            enabled: !args.no_align && align_override.is_none(),
+            steps: args.align_steps.max(1),
+            passes: args.align_passes.max(1),
+            ssim_weight: args.align_ssim_weight,
+            refine_top: args.align_refine_top,
+        },
+        align_override,
     };
 
     if !args.json && !args.stream {
@@ -163,6 +227,37 @@ fn main() -> anyhow::Result<()> {
         log::info!("  layers: {}", config.layers);
         log::info!("  search: {}", format_search(&config.search));
         log::info!("  init_mode: {}", format_init_mode(&config.init_mode));
+    }
+
+    // Alignment-only mode: score every crop, save the sweep results and each
+    // candidate's quick mockup, then exit without optimizing (v1's autoCrop).
+    if args.align_only {
+        let search = align_search(&config, true)?;
+        std::fs::create_dir_all(&results_dir)?;
+        export::save_alignment(&search.result, &results_dir.join("alignment_scores.json"))?;
+        for (t, img) in &search.mockups {
+            let name = format!("align_{}_{}_{}.png", t.zoom, t.shift_x, t.shift_y);
+            export::save_image(img, &results_dir.join(name))?;
+        }
+        println!(
+            "{:>4} {:>5} {:>5} | {:>8} {:>8} | score",
+            "zoom", "shiftX", "shiftY", "PSNR", "SSIM"
+        );
+        for s in &search.result.scores {
+            println!(
+                "{:>4} {:>5} {:>5} | {:>8.3} {:>8.4} | {:.3}",
+                s.transform.zoom, s.transform.shift_x, s.transform.shift_y, s.psnr, s.ssim, s.score
+            );
+        }
+        let best = search.result.best;
+        println!(
+            "Best: zoom {}, shift ({}, {}) — scores saved to {}",
+            best.zoom,
+            best.shift_x,
+            best.shift_y,
+            results_dir.join("alignment_scores.json").display()
+        );
+        return Ok(());
     }
 
     let result = if args.stream {
@@ -194,6 +289,9 @@ fn main() -> anyhow::Result<()> {
     export::save_choices(&result, &results_dir.join("choices.json"))?;
     export::save_stats(&result, &results_dir.join("stats.txt"))?;
     export::save_error_over_time(&result, &results_dir.join("error_over_time.csv"))?;
+    if let Some(ref alignment) = result.alignment {
+        export::save_alignment(alignment, &results_dir.join("alignment_scores.json"))?;
+    }
 
     if args.json || args.stream {
         // Output final JSON result to stdout

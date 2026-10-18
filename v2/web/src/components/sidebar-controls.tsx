@@ -23,6 +23,7 @@ export function SidebarControls() {
   const activeItem = useActiveItem();
   const setConfig = useOptimizerStore((s) => s.setConfig);
   const optimize = useOptimizerStore((s) => s.optimize);
+  const progressStatus = useOptimizerStore((s) => s.progressStatus);
   const [busy, setBusy] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +165,18 @@ export function SidebarControls() {
           />
         </div>
 
+        {/* Auto-align */}
+        <label className="flex items-center gap-2 text-xs text-gray-600">
+          <input
+            type="checkbox"
+            checked={config.align_enabled}
+            onChange={(e) => setConfig("align_enabled", e.target.checked)}
+            disabled={busy}
+            className="rounded"
+          />
+          Auto-align to character grid
+        </label>
+
         {/* Advanced */}
         <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
           <CollapsibleTrigger className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 w-full">
@@ -221,6 +234,12 @@ export function SidebarControls() {
           <div className="text-xs text-gray-400 space-y-0.5">
             <div>Error: {result.stats.final_error.toFixed(5)}</div>
             <div>Time: {(result.stats.total_time_ns / 1e6).toFixed(0)} ms</div>
+            {result.alignment && (
+              <div>
+                Aligned: zoom {result.alignment.best.zoom}/{result.alignment.steps},
+                shift ({result.alignment.best.shift_x}/{result.alignment.steps}, {result.alignment.best.shift_y}/{result.alignment.steps}) char
+              </div>
+            )}
           </div>
         )}
 
@@ -246,7 +265,7 @@ export function SidebarControls() {
           {busy ? (
             <span className="flex items-center gap-1.5">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Optimizing…
+              {progressStatus ?? "Optimizing…"}
             </span>
           ) : result ? (
             "Re-optimize"

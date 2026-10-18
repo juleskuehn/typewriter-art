@@ -7,7 +7,7 @@
 //! ## Quick Usage
 //!
 //! ```rust,no_run
-//! use typewriter_art::{optimize, OptimizeConfig, InitMode, SearchAlgorithm};
+//! use typewriter_art::{optimize, AlignConfig, OptimizeConfig, InitMode, SearchAlgorithm};
 //!
 //! let config = OptimizeConfig {
 //!     charset: "hermes-sm".into(),
@@ -21,6 +21,8 @@
 //!     layers: "4x2".into(),
 //!     shuffle: true,
 //!     out_file: "results/final.png".into(),
+//!     align: AlignConfig::default(),
+//!     align_override: None,
 //! };
 //!
 //! let result = optimize(config)?;
@@ -35,6 +37,7 @@
 //!
 //! The core library exposes:
 //! - [`optimize()`] — blocking, returns final [`OptimizeResult`]
+//! - [`align_search()`] — just the pre-optimization auto-alignment sweep
 //! - Configuration via [`OptimizeConfig`] and [`types`]
 //! - Export helpers in [`export`] (PNG, JSON, CSV)
 //! - Individual modules for lower-level control
@@ -44,10 +47,12 @@
 //! - **Rayon parallelism**: positions within a layer optimized in parallel
 //! - **Coordinate descent**: alternating layer optimization with fixed backgrounds
 
+pub mod align;
 pub mod charset;
 pub mod chars;
 pub mod export;
 pub mod layers;
+pub mod metrics;
 pub mod optimize;
 pub mod render;
 pub mod resize;
@@ -55,8 +60,9 @@ pub mod search;
 pub mod types;
 
 // Re-export main public API
-pub use optimize::{optimize, optimize_with_progress, ProgressEvent};
+pub use optimize::{align_search, optimize, optimize_with_progress, ProgressEvent};
 pub use types::{
-    CharsetConfig, InitMode, OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
+    AlignConfig, AlignmentResult, AlignmentScore, CharsetConfig, CropTransform, InitMode,
+    OptimizeConfig, OptimizeResult, SearchAlgorithm, Stats,
 };
 pub use export::{build_json_result, image_to_base64_png, JsonResult};

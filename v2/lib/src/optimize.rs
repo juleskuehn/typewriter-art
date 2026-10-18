@@ -9,6 +9,7 @@ use std::time::Instant;
 use ndarray::Axis;
 use rand::seq::SliceRandom;
 
+use crate::align;
 use crate::charset::{prep_charset, LoadedCharset};
 use crate::export::image_to_base64_png;
 use crate::layers::{fractional_to_pixel, load_layer_configs};
@@ -16,20 +17,34 @@ use crate::render::{combine_layers, compute_background, render_all_layers, rende
 use crate::resize::resize_target;
 use crate::search::optimize_layer_pass;
 use crate::types::{
-    CharShape, Image, InitMode, LayerOffset, Layers, OptimizeConfig,
-    OptimizeResult, Stats,
+    AlignmentResult, Chars, CharShape, FractionalOffset, Image, InitMode, LayerOffset, Layers,
+    OptimizeConfig, OptimizeResult, Padding, Stats,
 };
 
 /// Progress event emitted during optimization (for streaming).
+///
+/// Serialized with a `type` tag: `"type":"align"` while the auto-alignment
+/// sweep evaluates candidates, `"type":"loop"` after each layer pass.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct ProgressEvent {
-    pub loop_num: usize,
-    pub num_loops: usize,
-    pub layer_num: usize,
-    pub num_layers: usize,
-    pub error: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mockup_b64: Option<String>,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProgressEvent {
+    /// One auto-alignment candidate finished evaluating.
+    Align {
+        /// Candidates evaluated so far.
+        candidate: usize,
+        /// Total candidates in the sweep.
+        total: usize,
+    },
+    /// One layer optimization pass finished.
+    Loop {
+        loop_num: usize,
+        num_loops: usize,
+        layer_num: usize,
+        num_layers: usize,
+        error: f32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mockup_b64: Option<String>,
+    },
 }
 
 /// Run the full optimization pipeline.
@@ -54,56 +69,16 @@ fn optimize_inner(
 ) -> anyhow::Result<OptimizeResult> {
     let start = Instant::now();
 
-    // Load charset
-    let base_path = std::env::current_dir()?;
-    let assets_path = base_path.join("assets");
-    let charset_path = if std::path::Path::new(&config.charset).is_dir() {
-        std::path::PathBuf::from(&config.charset)
-    } else {
-        let under_assets = assets_path.join("charsets").join(&config.charset);
-        if under_assets.is_dir() {
-            under_assets
-        } else {
-            assets_path.join(&config.charset)
-        }
-    };
-
-    // Resolve target path: try assets/ then raw path
-    let target_path = {
-        let p = std::path::Path::new(&config.target);
-        if p.is_file() {
-            p.to_path_buf()
-        } else {
-            let under_assets = assets_path.join(&config.target);
-            if under_assets.is_file() {
-                under_assets
-            } else {
-                p.to_path_buf()
-            }
-        }
-    };
-
-    let LoadedCharset {
+    let PreparedInputs {
         chars,
-        x_change,
-        y_change,
-    } = prep_charset(&charset_path)?;
-
-    let char_h = chars.shape()[1];
-    let char_w = chars.shape()[2];
-    let char_shape: CharShape = (char_h, char_w);
-
-    // Load target image
-    let target_img = image::open(&target_path)?.into_luma8();
-
-    // Resize target to character grid
-    let (target, padding) = resize_target(
-        &target_img,
-        config.row_length,
         char_shape,
-        (x_change, y_change),
-    );
+        target,
+        padding,
+        fractional_offsets,
+        layer_offsets,
+    } = load_inputs(&config)?;
 
+    let (char_h, char_w) = char_shape;
     let num_rows = target.nrows() / char_h;
     let num_cols = target.ncols() / char_w;
     let num_positions = num_rows * num_cols;
@@ -121,21 +96,64 @@ fn optimize_inner(
         target.ncols(),
     );
 
-    // Load layer offsets
-    let layers_json_path = assets_path.join("layers.json");
-    let all_layer_configs = load_layer_configs(&layers_json_path)?;
-    let fractional_offsets = all_layer_configs
-        .get(&config.layers)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Layer config '{}' not found in layers.json. Available: {:?}",
-                config.layers,
-                all_layer_configs.keys().collect::<Vec<_>>()
+    // Pre-optimization auto-alignment sweep ("optimized cropping", paper §3.4)
+    // Scored over the image content only — not the padding border.
+    let content = padding.content_rect((target.nrows(), target.ncols()));
+    let progress_tx = progress_tx.map(std::sync::Mutex::new);
+    let (target, alignment) = match config.align_override {
+        Some(t) => {
+            log::info!("Using manual crop transform: {:?}", t);
+            let (aligned, _) =
+                align::apply_crop(&target, &t, char_shape, content, config.align.steps);
+            (
+                aligned,
+                Some(AlignmentResult {
+                    best: t,
+                    steps: config.align.steps,
+                    scores: Vec::new(),
+                }),
             )
-        })?
-        .clone();
-    let layer_offsets: Vec<LayerOffset> =
-        fractional_to_pixel(&fractional_offsets, char_h, char_w);
+        }
+        None if config.align.enabled => {
+            let total = config.align.steps.pow(3) as usize;
+            log::info!("Auto-alignment: evaluating {} candidates", total);
+            let progress = |completed: usize, total: usize| {
+                log::debug!("Align: evaluated {}/{} candidates", completed, total);
+                if let Some(tx) = progress_tx.as_ref() {
+                    let _ = tx.lock().unwrap().send(ProgressEvent::Align {
+                        candidate: completed,
+                        total,
+                    });
+                }
+            };
+            let search = align::search(
+                &target,
+                &chars,
+                &layer_offsets,
+                &config.align,
+                config.asymmetry,
+                content,
+                false,
+                Some(&progress),
+            );
+            let (aligned, _) = align::apply_crop(
+                &target,
+                &search.result.best,
+                char_shape,
+                content,
+                config.align.steps,
+            );
+            log::info!(
+                "Auto-alignment: best zoom {} shift ({}, {}), score {:.3}",
+                search.result.best.zoom,
+                search.result.best.shift_x,
+                search.result.best.shift_y,
+                search.result.scores.first().map(|s| s.score).unwrap_or(0.0),
+            );
+            (aligned, Some(search.result))
+        }
+        None => (target, None),
+    };
 
     let num_layers = layer_offsets.len();
     log::info!(
@@ -257,13 +275,13 @@ fn optimize_inner(
             error_over_time.push(mean_err);
 
             // Emit progress event if streaming (mockup only on first layer of each loop)
-            if let Some(ref tx) = progress_tx {
+            if let Some(tx) = progress_tx.as_ref() {
                 let mockup_b64 = if layer_num == 0 {
                     image_to_base64_png(&mockup).ok()
                 } else {
                     None
                 };
-                let _ = tx.send(ProgressEvent {
+                let _ = tx.lock().unwrap().send(ProgressEvent::Loop {
                     loop_num: loop_num + 1,
                     num_loops,
                     layer_num: layer_num + 1,
@@ -304,7 +322,124 @@ fn optimize_inner(
         num_cols,
         fractional_offsets,
         layer_offsets,
+        alignment,
     })
+}
+
+/// Inputs shared by the optimization pipeline and the alignment sweep.
+struct PreparedInputs {
+    chars: Chars,
+    char_shape: CharShape,
+    /// Target image, resized and padded to the character grid.
+    target: Image,
+    padding: Padding,
+    fractional_offsets: Vec<FractionalOffset>,
+    layer_offsets: Vec<LayerOffset>,
+}
+
+/// Load the charset and target image, resize the target to the character grid,
+/// and resolve the layer offsets. Shared by [`optimize`] and [`align_search`].
+fn load_inputs(config: &OptimizeConfig) -> anyhow::Result<PreparedInputs> {
+    // Load charset
+    let base_path = std::env::current_dir()?;
+    let assets_path = base_path.join("assets");
+    let charset_path = if std::path::Path::new(&config.charset).is_dir() {
+        std::path::PathBuf::from(&config.charset)
+    } else {
+        let under_assets = assets_path.join("charsets").join(&config.charset);
+        if under_assets.is_dir() {
+            under_assets
+        } else {
+            assets_path.join(&config.charset)
+        }
+    };
+
+    // Resolve target path: try assets/ then raw path
+    let target_path = {
+        let p = std::path::Path::new(&config.target);
+        if p.is_file() {
+            p.to_path_buf()
+        } else {
+            let under_assets = assets_path.join(&config.target);
+            if under_assets.is_file() {
+                under_assets
+            } else {
+                p.to_path_buf()
+            }
+        }
+    };
+
+    let LoadedCharset {
+        chars,
+        x_change,
+        y_change,
+    } = prep_charset(&charset_path)?;
+
+    let char_h = chars.shape()[1];
+    let char_w = chars.shape()[2];
+    let char_shape: CharShape = (char_h, char_w);
+
+    // Load target image and resize it to the character grid
+    let target_img = image::open(&target_path)?.into_luma8();
+    let (target, padding) = resize_target(
+        &target_img,
+        config.row_length,
+        char_shape,
+        (x_change, y_change),
+    );
+
+    // Load layer offsets
+    let layers_json_path = assets_path.join("layers.json");
+    let all_layer_configs = load_layer_configs(&layers_json_path)?;
+    let fractional_offsets = all_layer_configs
+        .get(&config.layers)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Layer config '{}' not found in layers.json. Available: {:?}",
+                config.layers,
+                all_layer_configs.keys().collect::<Vec<_>>()
+            )
+        })?
+        .clone();
+    let layer_offsets: Vec<LayerOffset> =
+        fractional_to_pixel(&fractional_offsets, char_h, char_w);
+
+    Ok(PreparedInputs {
+        chars,
+        char_shape,
+        target,
+        padding,
+        fractional_offsets,
+        layer_offsets,
+    })
+}
+
+/// Run only the auto-alignment sweep and return its results.
+///
+/// Used by the CLI's `--align-only` mode. Unlike [`optimize`], this ignores
+/// `config.align.enabled` — it always runs the sweep. When `keep_mockups` is
+/// set, each candidate's quick mockup is returned alongside the scores.
+pub fn align_search(
+    config: &OptimizeConfig,
+    keep_mockups: bool,
+) -> anyhow::Result<crate::types::AlignmentSearch> {
+    let inputs = load_inputs(config)?;
+    let progress = |completed: usize, total: usize| {
+        log::info!("Align: evaluated {}/{} candidates", completed, total);
+    };
+    let content = inputs
+        .padding
+        .content_rect((inputs.target.nrows(), inputs.target.ncols()));
+    Ok(align::search(
+        &inputs.target,
+        &inputs.chars,
+        &inputs.layer_offsets,
+        &config.align,
+        config.asymmetry,
+        content,
+        keep_mockups,
+        Some(&progress),
+    ))
 }
 
 fn format_offsets(offsets: &[(f32, f32)]) -> String {

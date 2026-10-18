@@ -24,6 +24,14 @@ export async function downloadZip(result: OptimizeResult) {
   // Choices JSON
   zip.file("choices.json", JSON.stringify(result.choices, null, 2));
 
+  // Auto-alignment scores (same format as the CLI's alignment_scores.json)
+  if (result.alignment) {
+    zip.file(
+      "alignment_scores.json",
+      JSON.stringify(result.alignment, null, 2)
+    );
+  }
+
   // Stats text — same format as the CLI's stats.txt
   const usPerComparison =
     result.stats.total_comparisons > 0

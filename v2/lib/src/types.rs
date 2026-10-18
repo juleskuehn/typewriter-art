@@ -38,6 +38,99 @@ pub struct Padding {
     pub left: usize,
 }
 
+impl Padding {
+    /// The image content inside a padded target of `shape` (rows, cols):
+    /// `(y0, y1, x0, x1)` with exclusive ends — i.e. the container minus the
+    /// white border that `resize_target` adds (half a character on each side,
+    /// plus any bottom rows padded to reach a character boundary).
+    pub fn content_rect(&self, shape: (usize, usize)) -> (usize, usize, usize, usize) {
+        (
+            self.top,
+            shape.0.saturating_sub(self.bottom),
+            self.left,
+            shape.1.saturating_sub(self.right),
+        )
+    }
+}
+
+/// One crop candidate for the auto-alignment sweep (paper §3.4).
+///
+/// All fields are in step units: with `steps = 4` (the default) a value of 1
+/// means ¼ of a character — for `zoom` the container grows by ¼ char in each
+/// dimension, for the shifts the content moves left/up by ¼ char
+/// (`a, b, c ∈ {0, 0.25, 0.5, 0.75}` in the paper).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CropTransform {
+    pub zoom: u32,
+    pub shift_x: u32,
+    pub shift_y: u32,
+}
+
+/// Scored result for one alignment candidate.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AlignmentScore {
+    pub transform: CropTransform,
+    pub psnr: f32,
+    pub ssim: f32,
+    /// `ssim * ssim_weight + psnr` (the paper's `SSIM × 4 + PSNR`).
+    pub score: f32,
+    /// True when this candidate was rescored with the full layer stack
+    /// (two-stage sweep); unrefined scores come from the single-pass screen.
+    #[serde(default)]
+    pub refined: bool,
+}
+
+/// Outcome of the auto-alignment sweep.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlignmentResult {
+    /// The chosen crop transform.
+    pub best: CropTransform,
+    /// Steps per parameter (`steps³` candidates were evaluated).
+    pub steps: u32,
+    /// All candidates, sorted best-first.
+    pub scores: Vec<AlignmentScore>,
+}
+
+/// Full output of [`align::search()`], including optional candidate mockups.
+///
+/// [`align::search()`]: crate::align::search
+#[derive(Debug, Clone)]
+pub struct AlignmentSearch {
+    pub result: AlignmentResult,
+    /// Quick mockup per candidate (cropped to its score region), best-first.
+    /// Only populated when requested.
+    pub mockups: Vec<(CropTransform, Image)>,
+}
+
+/// Configuration for the pre-optimization auto-alignment sweep.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlignConfig {
+    /// Run the sweep before optimizing.
+    pub enabled: bool,
+    /// Steps per parameter; `steps³` candidates (4 → 64, as in the paper).
+    pub steps: u32,
+    /// Quick greedy passes per candidate (paper: a single cycle).
+    pub passes: u32,
+    /// Score = `ssim * ssim_weight + psnr` (paper: 4.0).
+    pub ssim_weight: f32,
+    /// Two-stage sweep for multi-layer configs: after screening every
+    /// candidate with a single placement pass, rescore the top `refine_top`
+    /// with the full layer stack and rank by that. 0 disables refinement.
+    pub refine_top: u32,
+}
+
+impl Default for AlignConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            steps: 4,
+            passes: 1,
+            ssim_weight: 4.0,
+            refine_top: 8,
+        }
+    }
+}
+
 /// Configuration for a charset sprite sheet (matches config.json format).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CharsetConfig {
@@ -106,6 +199,10 @@ pub struct OptimizeConfig {
     pub shuffle: bool,
     /// Output file path for the final mockup PNG.
     pub out_file: String,
+    /// Pre-optimization auto-alignment sweep ("optimized cropping").
+    pub align: AlignConfig,
+    /// Skip the sweep and use this crop transform directly.
+    pub align_override: Option<CropTransform>,
 }
 
 /// Statistics collected during optimization.
@@ -139,4 +236,6 @@ pub struct OptimizeResult {
     pub fractional_offsets: Vec<FractionalOffset>,
     /// Layer offsets in pixels (for cropping/export).
     pub layer_offsets: Vec<LayerOffset>,
+    /// Auto-alignment outcome, when the sweep (or a manual override) ran.
+    pub alignment: Option<AlignmentResult>,
 }

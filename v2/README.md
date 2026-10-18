@@ -38,6 +38,7 @@ open results/final.png
 - `final.png` — the final mockup image
 - `layer_*.png` — individual layer images
 - `choices.json` — character assignments per layer
+- `alignment_scores.json` — auto-alignment sweep scores (when alignment runs)
 - `error_over_time.csv` — error after each optimization pass
 - `stats.txt` — timing and comparison statistics
 
@@ -61,8 +62,49 @@ Options:
   -l, --layers <KEY>         Layer config from layers.json (default: 4x2)
                              Options: 1x1, 4x1, 4x2, 16x1, daisy_full, ...
   -o, --out-file <PATH>      Output PNG path (default: results/final.png)
+
+Auto-alignment (enabled by default; see below):
+      --no-align             Skip the pre-optimization crop sweep
+      --align-only           Run only the sweep: score all crops, save
+                             alignment_scores.json + per-candidate mockups, exit
+      --align-steps <N>      Steps per parameter, N³ candidates (default: 4 = 64)
+      --align-passes <N>     Quick greedy passes per candidate (default: 1)
+      --align-ssim-weight F  Score = SSIM × F + PSNR (default: 4.0)
+      --align-refine-top <N> Rescore top N candidates with the full layer
+                             stack (default: 8; 0 = cheap screen only)
+      --zoom <N>             Manual crop transform (skips the sweep)
+      --shift-x <N>          Manual crop transform (skips the sweep)
+      --shift-y <N>          Manual crop transform (skips the sweep)
   -h, --help                 Show help
 ```
+
+## Auto-Alignment (Optimized Cropping)
+
+Characters land on a fixed character grid, so how the target lines up with that
+grid strongly affects shape matching — the paper calls this "the primary factor
+when the typed image is small." Before optimizing, v2 therefore runs the paper's
+§3.4 auto-alignment routine (v1's `autoCrop`, ported from git history):
+
+1. Try all 64 combinations of small zoom and shift values (¼-char steps).
+2. Run a quick greedy optimization cycle for each cropped target.
+3. Score each quick mockup with `SSIM × 4 + PSNR`, keep the best crop, and
+   apply it before the real optimization.
+
+Only the **image content** is compared — the white padding border that
+`resize_target` adds (half a character on each side) is excluded from the
+score region. Otherwise the crisp content/padding boundary — a big, easy
+feature for SSIM, which works much like an edge detector — can dominate the
+score and optimize the "frame" instead of the picture.
+
+Two stages keep the sweep cheap: every candidate is screened with a single
+placement pass (as v1 did), then the top `--align-refine-top` candidates are
+rescored with the full layer stack and ranked by that. Typical cost is a few
+seconds (vs ~10 minutes for the Python original); disable with `--no-align`.
+
+Differences from the v1 code, on purpose: shift steps follow the paper (¼ char,
+not the v1 code's ⅛ char), the score weights SSIM by 4 (v1: `ssim + psnr`), the
+quick pass is an exact greedy pass instead of ANN-assisted placement, and the
+winner is applied automatically instead of requiring a manual re-run.
 
 ## Performance
 
@@ -84,6 +126,8 @@ v2/
 │   └── src/
 │       ├── lib.rs           # Public API, re-exports
 │       ├── optimize.rs      # Main optimization loop (orchestration)
+│       ├── align.rs         # Pre-optimization auto-alignment sweep
+│       ├── metrics.rs       # PSNR & SSIM (skimage-compatible)
 │       ├── search.rs        # Greedy & SA search with batch evaluation
 │       ├── chars.rs         # Batch character evaluation (key perf trick)
 │       ├── render.rs        # Layer composition, background computation
@@ -106,10 +150,12 @@ v2/
 
 **Rayon parallelism** — positions within a layer pass run in parallel. The library target is `lib` (not `bin`), so the web server can call `typewriter_art::optimize()` directly.
 
+**Auto-alignment sweep** — before optimizing, 64 small zoom/shift crops of the target are quickly evaluated and the best one is applied (see above). The sweep runs its candidates in parallel, in waves bounded to one candidate per thread.
+
 ## Using as a Library (for Phase 2 Web Server)
 
 ```rust
-use typewriter_art::{optimize, OptimizeConfig, InitMode, SearchAlgorithm};
+use typewriter_art::{optimize, AlignConfig, OptimizeConfig, InitMode, SearchAlgorithm};
 
 let config = OptimizeConfig {
     charset: "hermes-sm".into(),
@@ -123,6 +169,8 @@ let config = OptimizeConfig {
     layers: "4x2".into(),
     shuffle: true,
     out_file: "results/final.png".into(),
+    align: AlignConfig::default(),
+    align_override: None,
 };
 
 let result = optimize(config)?;
@@ -188,6 +236,7 @@ The web app provides:
 - Drag-and-drop or paste image upload
 - Parameter controls (charset, layers, algorithm, row length, loops, asymmetry)
 - Advanced options (init mode, temperature, shuffle)
+- Auto-alignment toggle with live sweep progress and chosen crop readout
 - Live optimization with result display (canvas-based mockup renderer)
 - Layer gallery with tabbed viewer and lightbox
 - Downloads: final PNG, choices JSON, individual layer PNGs

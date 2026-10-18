@@ -256,6 +256,11 @@ interface OptimizerStore {
    * UI waits rather than flashing the empty state over real history.
    */
   hydrated: boolean;
+  /**
+   * Transient status line while a run is in flight ("Aligning 12/72…",
+   * "Optimizing…"). Not persisted.
+   */
+  progressStatus: string | null;
 
   activeItem: () => HistoryItem | null;
 
@@ -276,6 +281,7 @@ export const useOptimizerStore = create<OptimizerStore>()(
       centerTab: "input",
       newImageMode: true,
       hydrated: false,
+      progressStatus: null,
 
       activeItem: () => {
         const { history, activeId } = get();
@@ -360,14 +366,22 @@ export const useOptimizerStore = create<OptimizerStore>()(
         // Suspend persistence for the duration of the run: every progress event
         // calls set(), and each one would otherwise serialize the whole history.
         persistSuspended = true;
+        set({ progressStatus: "Preparing…" });
         try {
           const result: OptimizeResult = await runOptimization(
             item.imageDataUrl,
             item.config,
             // Progress callback: update the result incrementally
             (progress) => {
+              if (progress.type === "align") {
+                set({
+                  progressStatus: `Aligning ${progress.candidate}/${progress.total}…`,
+                });
+                return;
+              }
               runErrors.push(progress.error);
               set((s) => ({
+                progressStatus: "Optimizing…",
                 history: s.history.map((h) =>
                   h.id === activeId
                     ? {
@@ -409,6 +423,7 @@ export const useOptimizerStore = create<OptimizerStore>()(
           throw err;
         } finally {
           persistSuspended = false;
+          set({ progressStatus: null });
         }
       },
 

@@ -108,49 +108,90 @@ pub fn resize_area(im: &image::GrayImage, new_w: u32, new_h: u32) -> image::Gray
         return im.clone();
     }
 
+    let vals = resize_area_generic(
+        in_w as usize,
+        in_h as usize,
+        new_w as usize,
+        new_h as usize,
+        |x, y| f64::from(im.get_pixel(x as u32, y as u32).0[0]),
+    );
+
+    let mut out = image::GrayImage::new(new_w, new_h);
+    for (i, v) in vals.into_iter().enumerate() {
+        let (x, y) = (i % new_w as usize, i / new_w as usize);
+        out.put_pixel(x as u32, y as u32, image::Luma([v.round().clamp(0.0, 255.0) as u8]));
+    }
+    out
+}
+
+/// Resize a float image [0.0, 1.0] using area averaging.
+///
+/// Same resampling as [`resize_area`], without the uint8 quantization.
+pub fn resize_area_f32(img: &Image, new_w: usize, new_h: usize) -> Image {
+    let (in_h, in_w) = img.dim();
+    if (new_w, new_h) == (in_w, in_h) {
+        return img.clone();
+    }
+
+    let vals = resize_area_generic(in_w, in_h, new_w, new_h, |x, y| f64::from(img[[y, x]]));
+    Image::from_shape_vec((new_h, new_w), vals.into_iter().map(|v| v as f32).collect())
+        .expect("pixel count matches dimensions")
+}
+
+/// Shared core: area-average resampling of an abstract pixel source into a
+/// `new_h × new_w` row-major buffer.
+fn resize_area_generic<F>(
+    in_w: usize,
+    in_h: usize,
+    new_w: usize,
+    new_h: usize,
+    mut get: F,
+) -> Vec<f64>
+where
+    F: FnMut(usize, usize) -> f64,
+{
     let sx = in_w as f64 / new_w as f64;
     let sy = in_h as f64 / new_h as f64;
 
-    let mut out = image::GrayImage::new(new_w, new_h);
+    let mut out = vec![0.0; new_w * new_h];
     for oy in 0..new_h {
-        let y0 = f64::from(oy) * sy;
-        let y1 = f64::from(oy + 1) * sy;
-        let iy0 = y0.floor() as u32;
-        let iy1 = y1.ceil() as u32; // exclusive
+        let y0 = oy as f64 * sy;
+        let y1 = (oy + 1) as f64 * sy;
+        let iy0 = y0.floor() as usize;
+        let iy1 = y1.ceil() as usize; // exclusive
 
         for ox in 0..new_w {
-            let x0 = f64::from(ox) * sx;
-            let x1 = f64::from(ox + 1) * sx;
-            let ix0 = x0.floor() as u32;
-            let ix1 = x1.ceil() as u32; // exclusive
+            let x0 = ox as f64 * sx;
+            let x1 = (ox + 1) as f64 * sx;
+            let ix0 = x0.floor() as usize;
+            let ix1 = x1.ceil() as usize; // exclusive
 
             let mut sum = 0.0;
             let mut weight_sum = 0.0;
 
             for iy in iy0..iy1.min(in_h) {
                 // Vertical overlap of the source pixel with the output box
-                let wy = (y1.min(f64::from(iy + 1)) - y0.max(f64::from(iy))).max(0.0);
+                let wy = (y1.min((iy + 1) as f64) - y0.max(iy as f64)).max(0.0);
                 if wy <= 0.0 {
                     continue;
                 }
                 for ix in ix0..ix1.min(in_w) {
                     // Horizontal overlap of the source pixel with the output box
-                    let wx = (x1.min(f64::from(ix + 1)) - x0.max(f64::from(ix))).max(0.0);
+                    let wx = (x1.min((ix + 1) as f64) - x0.max(ix as f64)).max(0.0);
                     if wx <= 0.0 {
                         continue;
                     }
                     let w = wx * wy;
-                    sum += w * f64::from(im.get_pixel(ix, iy).0[0]);
+                    sum += w * get(ix, iy);
                     weight_sum += w;
                 }
             }
 
-            let value = if weight_sum > 0.0 {
-                (sum / weight_sum).round() as u8
+            out[oy * new_w + ox] = if weight_sum > 0.0 {
+                sum / weight_sum
             } else {
-                255
+                255.0
             };
-            out.put_pixel(ox, oy, image::Luma([value]));
         }
     }
     out
@@ -238,5 +279,16 @@ mod tests {
         assert_eq!(arr.nrows() % 8, 0);
         assert_eq!(padding.top, 4);
         assert_eq!(padding.bottom, 4); // 16 rows content + 4 border - content ends 4 above bottom
+    }
+
+    #[test]
+    fn test_content_rect_excludes_padding() {
+        let padding = Padding {
+            top: 4,
+            right: 1,
+            bottom: 6,
+            left: 1,
+        };
+        assert_eq!(padding.content_rect((20, 10)), (4, 14, 1, 9));
     }
 }

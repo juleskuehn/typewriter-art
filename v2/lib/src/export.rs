@@ -8,12 +8,29 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::types::OptimizeResult;
+use crate::types::{AlignmentResult, Image, OptimizeResult};
 
 /// Save the mockup image to a PNG file.
 pub fn save_mockup(result: &OptimizeResult, path: &Path) -> anyhow::Result<()> {
     let img = float_image_to_gray(&result.mockup);
     img.save(path)?;
+    Ok(())
+}
+
+/// Save a float image [0.0, 1.0] to a PNG file.
+pub fn save_image(img: &Image, path: &Path) -> anyhow::Result<()> {
+    float_image_to_gray(img).save(path)?;
+    Ok(())
+}
+
+/// Save the auto-alignment scores as a JSON file.
+///
+/// Format: `{ "best": {zoom, shift_x, shift_y}, "steps": N, "scores": [...] }`
+/// with the score list sorted best-first (v1 wrote a flat sorted list to
+/// `autocropScores.json`).
+pub fn save_alignment(alignment: &AlignmentResult, path: &Path) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(alignment)?;
+    std::fs::write(path, json)?;
     Ok(())
 }
 
@@ -166,6 +183,9 @@ pub struct JsonResult {
     pub stats: crate::types::Stats,
     pub error_over_time: Vec<f32>,
     pub choices: serde_json::Value,
+    /// Auto-alignment outcome, when the sweep (or a manual override) ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<AlignmentResult>,
 }
 
 /// Build a JSON-serializable result from an optimization result.
@@ -208,5 +228,6 @@ pub fn build_json_result(result: &OptimizeResult) -> anyhow::Result<JsonResult> 
         stats: result.stats.clone(),
         error_over_time: result.error_over_time.clone(),
         choices: serde_json::Value::Object(choices_dict),
+        alignment: result.alignment.clone(),
     })
 }
